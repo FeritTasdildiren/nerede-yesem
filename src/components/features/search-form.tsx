@@ -70,8 +70,7 @@ export function SearchForm({ onSearch, isLoading }: SearchFormProps) {
         const data = await response.json();
         setSuggestions(data);
         setShowSuggestions(true);
-      } catch (error) {
-        console.error('Location search error:', error);
+      } catch {
         setSuggestions([]);
       } finally {
         setIsSearchingLocation(false);
@@ -117,8 +116,8 @@ export function SearchForm({ onSearch, isLoading }: SearchFormProps) {
           setLocationName(`${coords.latitude.toFixed(4)}, ${coords.longitude.toFixed(4)}`);
         }
       },
-      (error) => {
-        console.error('Geolocation error:', error);
+      () => {
+        // Geolocation failed (permission denied, timeout, or unavailable)
         setLocationStatus('error');
       },
       {
