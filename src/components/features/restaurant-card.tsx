@@ -121,11 +121,18 @@ export function RestaurantCard({ restaurant, rank }: RestaurantCardProps) {
             )}
           </div>
 
-          {/* Google Rating */}
-          <div className="mt-3 flex items-center gap-2 text-xs text-zinc-500">
-            <span>Google: ⭐ {restaurant.avgRating}</span>
-            <span>•</span>
-            <span>{restaurant.reviewCount} yorum</span>
+          {/* Ratings */}
+          <div className="mt-3 flex flex-col gap-1 text-xs text-zinc-500">
+            <div className="flex items-center gap-2">
+              <span>⭐ {restaurant.avgRating} Google Puanı</span>
+              <span>•</span>
+              <span>{restaurant.reviewCount} yorum</span>
+            </div>
+            {restaurant.keywordRating && restaurant.searchQuery && (
+              <div className="flex items-center gap-1 text-orange-600 dark:text-orange-400 font-medium">
+                <span>⭐ {restaurant.keywordRating} Bu Mekanın {restaurant.searchQuery.charAt(0).toUpperCase() + restaurant.searchQuery.slice(1)} Puanı</span>
+              </div>
+            )}
           </div>
         </div>
       </div>

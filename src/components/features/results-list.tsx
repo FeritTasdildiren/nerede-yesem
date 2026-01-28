@@ -39,7 +39,7 @@ export function ResultsList({ results, message }: ResultsListProps) {
           En İyi {results.length} Öneri
         </h3>
         <span className="text-sm text-zinc-500">
-          AI puanına göre sıralı
+          Yemek puanına göre sıralı
         </span>
       </div>
 

@@ -89,6 +89,8 @@ export interface CachedAnalysisResult {
   reviewCount: number;
   avgRating: number;
   distance?: number;
+  keywordRating?: number; // Scrape edilen yorumların yıldız ortalaması
+  searchQuery?: string; // Aranan yemek türü
 }
 
 export interface CacheEntry {

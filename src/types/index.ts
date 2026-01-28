@@ -45,6 +45,8 @@ export interface RestaurantWithAnalysis extends Restaurant {
     isRecommended: boolean;
     summary: string;
   };
+  keywordRating?: number; // Scrape edilen yorumların yıldız ortalaması (1-5)
+  searchQuery?: string; // Aranan yemek türü
 }
 
 export interface SearchResult {

@@ -216,6 +216,16 @@ export async function POST(request: NextRequest) {
       const { place, scrapeResult, reviewTexts: scrapeReviewTexts, needsApiCall } = attempt;
       let reviewTexts = scrapeReviewTexts;
 
+      // Calculate keyword rating from scraped reviews
+      let keywordRating: number | undefined;
+      if (scrapeResult?.reviews && scrapeResult.reviews.length > 0) {
+        const ratings = scrapeResult.reviews.map(r => r.rating).filter(r => r > 0);
+        if (ratings.length > 0) {
+          const sum = ratings.reduce((a, b) => a + b, 0);
+          keywordRating = Math.round((sum / ratings.length) * 10) / 10; // 1 decimal
+        }
+      }
+
       // Get restaurant details (from scrape or API)
       let details: {
         place_id: string;
@@ -316,6 +326,8 @@ export async function POST(request: NextRequest) {
         reviewCount: details.user_ratings_total || 0,
         distance: Math.round(distance * 10) / 10,
         aiAnalysis: analysis,
+        keywordRating, // Scrape edilen yorumların yıldız ortalaması
+        searchQuery: foodQuery, // Aranan yemek türü
       };
     };
 
@@ -329,9 +341,14 @@ export async function POST(request: NextRequest) {
 
     console.log(`[API] Processed ${analyzedRestaurants.length} restaurants (parallel)`);
 
-    // Sort by AI food score
+    // Sort by keyword rating (scrape edilen yorumların yıldız ortalaması)
+    // Fallback to AI food score if keyword rating is not available
     const sortedRestaurants = analyzedRestaurants
-      .sort((a, b) => b.aiAnalysis.foodScore - a.aiAnalysis.foodScore);
+      .sort((a, b) => {
+        const ratingA = a.keywordRating ?? (a.aiAnalysis.foodScore / 2); // AI score 0-10, rating 0-5
+        const ratingB = b.keywordRating ?? (b.aiAnalysis.foodScore / 2);
+        return ratingB - ratingA;
+      });
 
     // Generate recommendation message
     const message = await generateRecommendationMessage(
@@ -358,6 +375,8 @@ export async function POST(request: NextRequest) {
           reviewCount: r.reviewCount,
           avgRating: r.avgRating,
           distance: r.distance,
+          keywordRating: r.keywordRating,
+          searchQuery: r.searchQuery,
         }));
 
         await cacheService.store(
@@ -427,6 +446,8 @@ function transformCachedToRestaurant(cached: CachedAnalysisResult): RestaurantWi
       isRecommended: cached.isRecommended,
       summary: cached.summary,
     },
+    keywordRating: cached.keywordRating,
+    searchQuery: cached.searchQuery,
   };
 }
 
