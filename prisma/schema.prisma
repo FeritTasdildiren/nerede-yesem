@@ -21,6 +21,13 @@ enum UserRole {
   admin
 }
 
+enum CacheStatus {
+  fresh
+  stale
+  refreshing
+  failed
+}
+
 model User {
   id            String    @id @default(uuid())
   email         String    @unique
@@ -202,4 +209,149 @@ model MenuItem {
   menu          Menu      @relation(fields: [menuId], references: [id], onDelete: Cascade)
 
   @@map("menu_items")
+}
+
+// ============================================
+// CACHE & SCRAPING SYSTEM MODELS
+// ============================================
+
+// Scrape edilen restoran bilgileri
+model ScrapedRestaurant {
+  id                String        @id @default(uuid())
+  googlePlaceId     String        @unique @map("google_place_id")
+  name              String
+  formattedAddress  String        @map("formatted_address")
+  latitude          Decimal       @db.Decimal(10, 8)
+  longitude         Decimal       @db.Decimal(11, 8)
+  rating            Decimal?      @db.Decimal(2, 1)
+  totalReviews      Int?          @map("total_reviews")
+  priceLevel        Int?          @map("price_level")
+  phone             String?
+  website           String?
+  googleMapsUrl     String?       @map("google_maps_url")
+
+  scrapedAt         DateTime      @default(now()) @map("scraped_at")
+  lastRefreshAt     DateTime?     @map("last_refresh_at")
+
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+
+  reviews           ScrapedReview[]
+  cacheEntries      SearchCache[]
+
+  @@index([googlePlaceId])
+  @@map("scraped_restaurants")
+}
+
+// Scrape edilen yorumlar (scroll ile yüklenen liste sayfasından)
+model ScrapedReview {
+  id                  String            @id @default(uuid())
+  restaurantId        String            @map("restaurant_id")
+
+  // Yazar
+  authorName          String            @map("author_name")
+
+  // Yorum içeriği (liste sayfasından)
+  rating              Int               // Yıldız sayısı (1-5)
+  text                String            // Tam yorum metni
+  pricePerPerson      String?           @map("price_per_person") // Kişi başı fiyat (varsa, örn: "₺100-150")
+
+  // Zaman
+  relativeTime        String?           @map("relative_time") // "2 hafta önce" gibi
+
+  // Keyword eşleşme
+  foodKeyword         String            @map("food_keyword") // Arama yapılan yemek
+  matchedKeywords     String[]          @default([]) @map("matched_keywords")
+
+  scrapedAt           DateTime          @default(now()) @map("scraped_at")
+  createdAt           DateTime          @default(now()) @map("created_at")
+
+  restaurant          ScrapedRestaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@index([restaurantId])
+  @@index([foodKeyword])
+  @@index([rating])
+  @@map("scraped_reviews")
+}
+
+// Arama sonuç cache'i
+model SearchCache {
+  id                String              @id @default(uuid())
+
+  // Cache key bileşenleri
+  foodQuery         String              @map("food_query")
+  latitude          Decimal             @db.Decimal(10, 8)
+  longitude         Decimal             @db.Decimal(11, 8)
+  radiusKm          Int                 @map("radius_km")
+  cacheKey          String              @unique @map("cache_key")
+
+  status            CacheStatus         @default(fresh)
+
+  // Cache'lenen sonuçlar
+  analysisResults   Json                @map("analysis_results")
+  aiMessage         String?             @map("ai_message")
+
+  // Zamanlama
+  expiresAt         DateTime            @map("expires_at")
+  createdAt         DateTime            @default(now()) @map("created_at")
+  updatedAt         DateTime            @updatedAt @map("updated_at")
+  lastAccessedAt    DateTime            @default(now()) @map("last_accessed_at")
+
+  hitCount          Int                 @default(0) @map("hit_count")
+
+  restaurants       ScrapedRestaurant[]
+
+  @@index([cacheKey])
+  @@index([expiresAt])
+  @@index([status])
+  @@map("search_cache")
+}
+
+// Proxy kullanım takibi
+model ProxyUsage {
+  id                String        @id @default(uuid())
+  proxyAddress      String        @map("proxy_address")
+  tier              String
+  usedAt            DateTime      @default(now()) @map("used_at")
+  targetPlaceId     String        @map("target_place_id")
+  success           Boolean
+  responseTimeMs    Int?          @map("response_time_ms")
+  errorMessage      String?       @map("error_message")
+
+  createdAt         DateTime      @default(now()) @map("created_at")
+
+  @@index([proxyAddress])
+  @@index([usedAt])
+  @@map("proxy_usage")
+}
+
+// Arka plan işleri
+model BackgroundJob {
+  id                String        @id @default(uuid())
+  type              String
+  payload           Json
+  status            String        @default("pending")
+  priority          Int           @default(0)
+  attempts          Int           @default(0)
+  maxAttempts       Int           @default(3) @map("max_attempts")
+  lastError         String?       @map("last_error")
+
+  scheduledAt       DateTime      @default(now()) @map("scheduled_at")
+  startedAt         DateTime?     @map("started_at")
+  completedAt       DateTime?     @map("completed_at")
+  createdAt         DateTime      @default(now()) @map("created_at")
+
+  @@index([status, scheduledAt])
+  @@map("background_jobs")
+}
+
+// Sistem ayarları
+model SystemSetting {
+  id                String        @id @default(uuid())
+  key               String        @unique
+  value             String
+  description       String?
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+
+  @@map("system_settings")
 }
