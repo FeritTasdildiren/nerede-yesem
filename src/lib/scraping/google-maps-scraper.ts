@@ -783,7 +783,7 @@ export class GoogleMapsScraper {
   }
 
   /**
-   * Extract restaurant info from the page
+   * Extract restaurant info from the page (including price level)
    */
   private async extractRestaurantInfo(
     page: Page,
@@ -801,18 +801,34 @@ export class GoogleMapsScraper {
         }
       }
 
-      // Address
+      // Address - try multiple selectors
       let address = '';
-      const addressEl = document.querySelector('button[data-item-id="address"]');
-      if (addressEl?.textContent) {
-        address = addressEl.textContent.trim();
+      const addressSelectors = [
+        'button[data-item-id="address"]',
+        'button[aria-label*="Adres"]',
+        'div[data-item-id="address"]',
+      ];
+      for (const sel of addressSelectors) {
+        const el = document.querySelector(sel);
+        if (el?.textContent) {
+          address = el.textContent.trim();
+          break;
+        }
       }
 
-      // Phone
+      // Phone - try multiple selectors
       let phone: string | undefined;
-      const phoneEl = document.querySelector('button[data-item-id*="phone"]');
-      if (phoneEl?.textContent) {
-        phone = phoneEl.textContent.trim();
+      const phoneSelectors = [
+        'button[data-item-id*="phone"]',
+        'button[aria-label*="Telefon"]',
+        'a[data-item-id*="phone"]',
+      ];
+      for (const sel of phoneSelectors) {
+        const el = document.querySelector(sel);
+        if (el?.textContent) {
+          phone = el.textContent.trim();
+          break;
+        }
       }
 
       // Website
@@ -839,6 +855,49 @@ export class GoogleMapsScraper {
         }
       }
 
+      // Price level - try XPath first, then CSS selectors
+      let priceLevel: number | undefined;
+
+      // Try XPath for price level (user-provided)
+      const priceLevelXPath = '/html/body/div[1]/div[2]/div[9]/div[8]/div/div/div[1]/div[2]/div/div[1]/div/div/div[2]/div/div[1]/div[2]/div/div[1]/span/span/span/span[2]/span/span';
+      try {
+        const xpathResult = document.evaluate(priceLevelXPath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+        const priceEl = xpathResult.singleNodeValue as HTMLElement | null;
+        if (priceEl?.textContent) {
+          // Count ₺ symbols or $ symbols
+          const priceText = priceEl.textContent.trim();
+          const liraCount = (priceText.match(/₺/g) || []).length;
+          const dollarCount = (priceText.match(/\$/g) || []).length;
+          priceLevel = liraCount || dollarCount || undefined;
+        }
+      } catch {
+        // XPath failed, try CSS selectors
+      }
+
+      // Fallback: CSS selectors for price level
+      if (!priceLevel) {
+        const priceSelectors = [
+          'span[aria-label*="Fiyat"]',
+          'span[aria-label*="price"]',
+          'span:has(> span:contains("₺"))',
+        ];
+        for (const sel of priceSelectors) {
+          try {
+            const el = document.querySelector(sel);
+            if (el?.textContent) {
+              const text = el.textContent.trim();
+              const count = (text.match(/₺/g) || []).length || (text.match(/\$/g) || []).length;
+              if (count > 0) {
+                priceLevel = count;
+                break;
+              }
+            }
+          } catch {
+            // Selector failed
+          }
+        }
+      }
+
       return {
         googlePlaceId: pid,
         name,
@@ -847,6 +906,7 @@ export class GoogleMapsScraper {
         longitude: 0,
         rating,
         totalReviews,
+        priceLevel,
         phone,
         website,
         googleMapsUrl: window.location.href,

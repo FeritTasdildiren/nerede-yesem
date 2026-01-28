@@ -117,32 +117,29 @@ export async function POST(request: NextRequest) {
 
     console.log('[API] Top places:', topPlaces.map(p => `${p.name} (${p.rating})`));
 
-    // Process each restaurant in PARALLEL
+    // Process each restaurant in PARALLEL - Try scraping FIRST to minimize API calls
     const scrapedRestaurantIds: string[] = [];
 
-    const processRestaurant = async (place: typeof topPlaces[0]): Promise<RestaurantWithAnalysis | null> => {
-      console.log(`[API] Processing: ${place.name}`);
+    // Phase 1: Try scraping first for all restaurants
+    interface ScrapeAttempt {
+      place: typeof topPlaces[0];
+      scrapeResult: Awaited<ReturnType<typeof googleMapsScraper.scrapeAndSave>> | null;
+      reviewTexts: string[];
+      needsApiCall: boolean;
+    }
 
-      const details = await getPlaceDetails(place.place_id);
-      if (!details) {
-        console.log(`[API] Failed to get details for: ${place.name}`);
-        return null;
-      }
+    const scrapeAttempts: ScrapeAttempt[] = [];
 
-      const distance = calculateDistance(
-        location.latitude,
-        location.longitude,
-        details.geometry.location.lat,
-        details.geometry.location.lng
-      );
+    const tryScrapeFirst = async (place: typeof topPlaces[0]): Promise<ScrapeAttempt> => {
+      console.log(`[API] Trying scrape first for: ${place.name}`);
 
       let reviewTexts: string[] = [];
-      let analysis;
+      let scrapeResult: Awaited<ReturnType<typeof googleMapsScraper.scrapeAndSave>> | null = null;
+      let needsApiCall = true;
 
-      // Try to get scraped reviews from DB or scrape new ones
-      if (DB_ENABLED && details.url) {
+      if (DB_ENABLED) {
         try {
-          // Check if we have recent reviews for this keyword
+          // Check if we have recent reviews in DB
           const existingRestaurant = await restaurantRepository.findByPlaceId(place.place_id);
 
           if (existingRestaurant) {
@@ -153,36 +150,36 @@ export async function POST(request: NextRequest) {
             );
 
             if (existingReviews.length >= 5) {
-              // Use existing reviews
               console.log(`[API] Using ${existingReviews.length} cached reviews for ${place.name}`);
               reviewTexts = existingReviews.map((r: { text: string }) => r.text);
               scrapedRestaurantIds.push(existingRestaurant.id);
+              // If we have reviews + restaurant info in DB, no API call needed
+              if (existingRestaurant.formattedAddress) {
+                needsApiCall = false;
+              }
             }
           }
 
-          // If not enough reviews, scrape new ones
+          // If not enough reviews, try scraping
           if (reviewTexts.length < 5) {
             console.log(`[API] Scraping reviews for ${place.name}...`);
-            const scrapeResult = await googleMapsScraper.scrapeAndSave(
-              details.url,
+            // Build URL from place_id
+            const scrapeUrl = `https://www.google.com/maps/place/?q=place_id:${place.place_id}`;
+
+            scrapeResult = await googleMapsScraper.scrapeAndSave(
+              scrapeUrl,
               place.place_id,
               { foodKeyword: foodQuery },
               {
                 googlePlaceId: place.place_id,
-                name: details.name,
-                formattedAddress: details.formatted_address,
-                latitude: details.geometry.location.lat,
-                longitude: details.geometry.location.lng,
-                rating: details.rating,
-                totalReviews: details.user_ratings_total,
-                priceLevel: details.price_level,
-                phone: details.formatted_phone_number,
-                website: details.website,
-                googleMapsUrl: details.url,
+                name: place.name,
+                // Use location from Nearby Search
+                latitude: place.geometry?.location?.lat,
+                longitude: place.geometry?.location?.lng,
               }
             );
 
-            if (scrapeResult.success && scrapeResult.reviews.length > 0) {
+            if (scrapeResult.success && scrapeResult.reviews.length >= 5) {
               reviewTexts = scrapeResult.reviews.map(r => r.text);
               console.log(`[API] Scraped ${reviewTexts.length} reviews for ${place.name}`);
 
@@ -191,6 +188,11 @@ export async function POST(request: NextRequest) {
               if (savedRestaurant) {
                 scrapedRestaurantIds.push(savedRestaurant.id);
               }
+
+              // If scraping got us enough data, no API call needed
+              if (scrapeResult.restaurant?.name && scrapeResult.restaurant?.formattedAddress) {
+                needsApiCall = false;
+              }
             }
           }
         } catch (scrapeError) {
@@ -198,13 +200,84 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      // Fallback to Google Places API reviews
-      if (reviewTexts.length === 0) {
-        reviewTexts = details.reviews?.map(r => r.text).filter(Boolean) || [];
-        console.log(`[API] Using ${reviewTexts.length} Google API reviews for ${place.name}`);
+      return { place, scrapeResult, reviewTexts, needsApiCall };
+    };
+
+    // Run all scrape attempts in PARALLEL
+    console.log(`[API] Phase 1: Trying to scrape ${topPlaces.length} restaurants in parallel...`);
+    const allScrapeAttempts = await Promise.all(topPlaces.map(tryScrapeFirst));
+
+    // Count successful scrapes
+    const successfulScrapes = allScrapeAttempts.filter(a => !a.needsApiCall);
+    console.log(`[API] Phase 1 complete: ${successfulScrapes.length}/${topPlaces.length} restaurants scraped successfully`);
+
+    // Phase 2: Process results - call API only for failed scrapes if needed
+    const processRestaurant = async (attempt: ScrapeAttempt): Promise<RestaurantWithAnalysis | null> => {
+      const { place, scrapeResult, reviewTexts: scrapeReviewTexts, needsApiCall } = attempt;
+      let reviewTexts = scrapeReviewTexts;
+
+      // Get restaurant details (from scrape or API)
+      let details: {
+        place_id: string;
+        name: string;
+        formatted_address: string;
+        geometry: { location: { lat: number; lng: number } };
+        rating?: number;
+        user_ratings_total?: number;
+        price_level?: number;
+        formatted_phone_number?: string;
+        website?: string;
+        url?: string;
+        reviews?: Array<{ text: string }>;
+      };
+
+      if (!needsApiCall && scrapeResult?.restaurant) {
+        // Use scraped data
+        console.log(`[API] Using scraped data for: ${place.name}`);
+        const sr = scrapeResult.restaurant;
+        details = {
+          place_id: place.place_id,
+          name: sr.name || place.name,
+          formatted_address: sr.formattedAddress || place.formatted_address || '',
+          geometry: {
+            location: {
+              lat: sr.latitude || place.geometry?.location?.lat || 0,
+              lng: sr.longitude || place.geometry?.location?.lng || 0,
+            }
+          },
+          rating: sr.rating,
+          user_ratings_total: sr.totalReviews,
+          price_level: sr.priceLevel,
+          formatted_phone_number: sr.phone,
+          website: sr.website,
+          url: sr.googleMapsUrl,
+        };
+      } else {
+        // Need to call Place Details API
+        console.log(`[API] Calling Place Details API for: ${place.name}`);
+        const apiDetails = await getPlaceDetails(place.place_id);
+        if (!apiDetails) {
+          console.log(`[API] Failed to get details for: ${place.name}`);
+          return null;
+        }
+        details = apiDetails;
+
+        // If scraping failed but we need reviews, use API reviews
+        if (reviewTexts.length === 0) {
+          reviewTexts = details.reviews?.map(r => r.text).filter(Boolean) || [];
+          console.log(`[API] Using ${reviewTexts.length} Google API reviews for ${place.name}`);
+        }
       }
 
+      const distance = calculateDistance(
+        location.latitude,
+        location.longitude,
+        details.geometry.location.lat,
+        details.geometry.location.lng
+      );
+
       // Analyze reviews with AI
+      let analysis;
       if (reviewTexts.length > 0) {
         analysis = await analyzeReviews(details.name, foodQuery, reviewTexts);
       } else {
@@ -246,9 +319,12 @@ export async function POST(request: NextRequest) {
       };
     };
 
-    // Run all restaurant processing in PARALLEL
-    console.log(`[API] Starting parallel processing for ${topPlaces.length} restaurants...`);
-    const results = await Promise.all(topPlaces.map(processRestaurant));
+    // Phase 2: Process all restaurants
+    console.log(`[API] Phase 2: Processing ${allScrapeAttempts.length} restaurants...`);
+    const apiCallsNeeded = allScrapeAttempts.filter(a => a.needsApiCall).length;
+    console.log(`[API] API calls needed: ${apiCallsNeeded}/${allScrapeAttempts.length}`);
+
+    const results = await Promise.all(allScrapeAttempts.map(processRestaurant));
     const analyzedRestaurants = results.filter((r): r is RestaurantWithAnalysis => r !== null);
 
     console.log(`[API] Processed ${analyzedRestaurants.length} restaurants (parallel)`);
