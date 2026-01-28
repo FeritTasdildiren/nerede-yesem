@@ -189,10 +189,10 @@ export async function POST(request: NextRequest) {
                 scrapedRestaurantIds.push(savedRestaurant.id);
               }
 
-              // If scraping got us enough data, no API call needed
-              if (scrapeResult.restaurant?.name && scrapeResult.restaurant?.formattedAddress) {
-                needsApiCall = false;
-              }
+              // If we have enough reviews, no API call needed
+              // Use Nearby Search data (place.name, place.formatted_address) as fallback
+              needsApiCall = false;
+              console.log(`[API] Scraping successful for ${place.name}, skipping Place Details API`);
             }
           }
         } catch (scrapeError) {
@@ -231,26 +231,26 @@ export async function POST(request: NextRequest) {
         reviews?: Array<{ text: string }>;
       };
 
-      if (!needsApiCall && scrapeResult?.restaurant) {
-        // Use scraped data
-        console.log(`[API] Using scraped data for: ${place.name}`);
-        const sr = scrapeResult.restaurant;
+      if (!needsApiCall) {
+        // Use scraped data + Nearby Search data as fallback
+        console.log(`[API] Using scraped/nearby data for: ${place.name}`);
+        const sr = scrapeResult?.restaurant;
         details = {
           place_id: place.place_id,
-          name: sr.name || place.name,
-          formatted_address: sr.formattedAddress || place.formatted_address || '',
+          name: sr?.name || place.name,
+          formatted_address: sr?.formattedAddress || place.formatted_address || '',
           geometry: {
             location: {
-              lat: sr.latitude || place.geometry?.location?.lat || 0,
-              lng: sr.longitude || place.geometry?.location?.lng || 0,
+              lat: sr?.latitude || place.geometry?.location?.lat || 0,
+              lng: sr?.longitude || place.geometry?.location?.lng || 0,
             }
           },
-          rating: sr.rating,
-          user_ratings_total: sr.totalReviews,
-          price_level: sr.priceLevel,
-          formatted_phone_number: sr.phone,
-          website: sr.website,
-          url: sr.googleMapsUrl,
+          rating: sr?.rating || place.rating,
+          user_ratings_total: sr?.totalReviews || place.user_ratings_total,
+          price_level: sr?.priceLevel || place.price_level,
+          formatted_phone_number: sr?.phone,
+          website: sr?.website,
+          url: sr?.googleMapsUrl,
         };
       } else {
         // Need to call Place Details API
