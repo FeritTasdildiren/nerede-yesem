@@ -17,6 +17,7 @@ export type PriceRange = 'budget' | 'moderate' | 'expensive' | 'luxury';
 
 export interface Restaurant {
   id: string;
+  placeId?: string; // Google Place ID
   name: string;
   slug: string;
   description?: string;
@@ -29,6 +30,7 @@ export interface Restaurant {
   longitude: number;
   phone?: string;
   website?: string;
+  googleMapsUrl?: string; // Direct Google Maps URL
   avgRating: number;
   reviewCount: number;
   coverImage?: string;

@@ -25,10 +25,13 @@ export function RestaurantCard({ restaurant, rank }: RestaurantCardProps) {
         : 'bg-red-500';
 
   const handleOpenGoogleMaps = () => {
-    // Search for the place by name and address to open the actual Google Maps listing
-    const query = encodeURIComponent(`${restaurant.name}, ${restaurant.address}, ${restaurant.city}`);
-    const url = `https://www.google.com/maps/search/?api=1&query=${query}`;
-    window.open(url, '_blank');
+    // Use direct Google Maps URL if available, otherwise search by name
+    if (restaurant.googleMapsUrl) {
+      window.open(restaurant.googleMapsUrl, '_blank');
+    } else {
+      const query = encodeURIComponent(`${restaurant.name}, ${restaurant.address}`);
+      window.open(`https://www.google.com/maps/search/?api=1&query=${query}`, '_blank');
+    }
   };
 
   return (

@@ -3,9 +3,17 @@
 import { useState, useEffect, useRef } from 'react';
 
 interface SearchFormProps {
-  onSearch: (foodQuery: string, location: { latitude: number; longitude: number }) => void;
+  onSearch: (foodQuery: string, location: { latitude: number; longitude: number }, radius: number) => void;
   isLoading: boolean;
 }
+
+const radiusOptions = [
+  { value: 1, label: '1 km' },
+  { value: 2, label: '2 km' },
+  { value: 3, label: '3 km' },
+  { value: 5, label: '5 km' },
+  { value: 10, label: '10 km' },
+];
 
 interface LocationSuggestion {
   display_name: string;
@@ -29,6 +37,7 @@ export function SearchForm({ onSearch, isLoading }: SearchFormProps) {
   const [location, setLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [locationStatus, setLocationStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const [locationName, setLocationName] = useState<string>('');
+  const [radius, setRadius] = useState(3);
 
   // Location search
   const [locationQuery, setLocationQuery] = useState('');
@@ -147,14 +156,14 @@ export function SearchForm({ onSearch, isLoading }: SearchFormProps) {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (foodQuery.trim() && location) {
-      onSearch(foodQuery.trim(), location);
+      onSearch(foodQuery.trim(), location, radius);
     }
   };
 
   const handleQuickSelect = (food: string) => {
     setFoodQuery(food);
     if (location) {
-      onSearch(food, location);
+      onSearch(food, location, radius);
     }
   };
 
@@ -239,6 +248,28 @@ export function SearchForm({ onSearch, isLoading }: SearchFormProps) {
               )}
             </div>
           </div>
+
+          {locationStatus === 'success' && (
+            <div className="mt-3 flex items-center gap-2">
+              <span className="text-xs text-zinc-500">Mesafe:</span>
+              <div className="flex gap-1">
+                {radiusOptions.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setRadius(option.value)}
+                    className={`rounded-full px-3 py-1 text-xs font-medium transition-all ${
+                      radius === option.value
+                        ? 'bg-orange-500 text-white'
+                        : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-700 dark:text-zinc-300'
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           {locationStatus === 'error' && (
             <p className="mt-2 text-xs text-zinc-500">

@@ -1,192 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { analyzeReviews, generateRecommendationMessage } from '@/lib/ai/openai';
+import { searchNearbyRestaurants, getPlaceDetails, getPriceRangeFromLevel, calculateDistance } from '@/lib/google-places';
 import { ApiResponse, SearchResult, RestaurantWithAnalysis } from '@/types';
-
-// Mesafe hesaplama (Haversine formula) - km cinsinden
-function calculateDistance(
-  lat1: number,
-  lon1: number,
-  lat2: number,
-  lon2: number
-): number {
-  const R = 6371; // Dünya yarıçapı km
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos((lat1 * Math.PI) / 180) *
-      Math.cos((lat2 * Math.PI) / 180) *
-      Math.sin(dLon / 2) *
-      Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
-
-// Mock data - Türkiye genelinde restoranlar
-const mockRestaurants = [
-  // İstanbul - Kadıköy
-  {
-    id: '1',
-    name: 'Halil Lahmacun',
-    cuisineTypes: ['turkish', 'lahmacun'],
-    priceRange: 'budget' as const,
-    address: 'Kadıköy Çarşı',
-    city: 'İstanbul',
-    district: 'Kadıköy',
-    latitude: 40.9906,
-    longitude: 29.0261,
-    avgRating: 4.7,
-    reviewCount: 890,
-    reviews: [
-      'En iyi lahmacun burada! İnce hamur, bol malzeme.',
-      'Lahmacunları efsane, ayran da çok güzel.',
-      'Biraz kalabalık ama beklemeye değer.',
-      'Fiyat performans harika, lahmacun çıtır çıtır.',
-    ],
-  },
-  {
-    id: '2',
-    name: 'Çiya Sofrası',
-    cuisineTypes: ['turkish', 'regional'],
-    priceRange: 'moderate' as const,
-    address: 'Güneşlibahçe Sokak No: 43, Kadıköy',
-    city: 'İstanbul',
-    district: 'Kadıköy',
-    latitude: 40.9901,
-    longitude: 29.0245,
-    avgRating: 4.8,
-    reviewCount: 2100,
-    reviews: [
-      'Anadolu mutfağının en iyisi! Lahmacun dahil her şey leziz.',
-      'Lahmacunları el yapımı ve çok taze.',
-      'Döner de çok güzel, kebaplar harika.',
-      'Vejetaryen seçenekleri de var.',
-    ],
-  },
-  // İstanbul - Fatih/Sultanahmet
-  {
-    id: '3',
-    name: 'Tarihi Sultanahmet Köftecisi',
-    cuisineTypes: ['turkish', 'grill'],
-    priceRange: 'moderate' as const,
-    address: 'Divanyolu Caddesi No: 12, Sultanahmet',
-    city: 'İstanbul',
-    district: 'Fatih',
-    latitude: 41.0082,
-    longitude: 28.9784,
-    avgRating: 4.5,
-    reviewCount: 1250,
-    reviews: [
-      'Köfteleri muhteşem, etler taze ve lezzetli.',
-      'Piyaz çok güzel, köfteler biraz tuzlu geldi.',
-      'Servis hızlı, fiyatlar makul.',
-      'Klasik İstanbul lezzeti.',
-    ],
-  },
-  // İstanbul - Beşiktaş
-  {
-    id: '4',
-    name: 'Karadeniz Pide Salonu',
-    cuisineTypes: ['turkish', 'pide'],
-    priceRange: 'budget' as const,
-    address: 'Beşiktaş Çarşı',
-    city: 'İstanbul',
-    district: 'Beşiktaş',
-    latitude: 41.0422,
-    longitude: 29.0067,
-    avgRating: 4.6,
-    reviewCount: 650,
-    reviews: [
-      'Karadeniz pidesi muhteşem!',
-      'Kuşbaşılı pide favorim.',
-      'Lahmacun da var ve güzel.',
-      'Fiyatlar uygun, lezzet harika.',
-    ],
-  },
-  // İstanbul - Büyükçekmece / Alkent
-  {
-    id: '5',
-    name: 'Alkent Lahmacun Evi',
-    cuisineTypes: ['turkish', 'lahmacun'],
-    priceRange: 'budget' as const,
-    address: 'Alkent 2000 Mahallesi, Büyükçekmece',
-    city: 'İstanbul',
-    district: 'Büyükçekmece',
-    latitude: 41.0195,
-    longitude: 28.5831,
-    avgRating: 4.4,
-    reviewCount: 320,
-    reviews: [
-      'Mahallede en iyi lahmacun burada.',
-      'Lahmacunlar taze ve lezzetli.',
-      'Fiyatlar çok uygun.',
-      'Ayran da ev yapımı, süper.',
-    ],
-  },
-  {
-    id: '6',
-    name: 'Büyükçekmece Döner',
-    cuisineTypes: ['turkish', 'doner'],
-    priceRange: 'budget' as const,
-    address: 'Fatih Mahallesi, Büyükçekmece',
-    city: 'İstanbul',
-    district: 'Büyükçekmece',
-    latitude: 41.0210,
-    longitude: 28.5750,
-    avgRating: 4.3,
-    reviewCount: 180,
-    reviews: [
-      'Döner et kalitesi çok iyi.',
-      'İskender porsiyon doyurucu.',
-      'Lahmacun da yapıyorlar, fena değil.',
-      'Servis biraz yavaş.',
-    ],
-  },
-  {
-    id: '7',
-    name: 'Mimaroba Pide & Lahmacun',
-    cuisineTypes: ['turkish', 'pide', 'lahmacun'],
-    priceRange: 'budget' as const,
-    address: 'Mimaroba, Büyükçekmece',
-    city: 'İstanbul',
-    district: 'Büyükçekmece',
-    latitude: 41.0150,
-    longitude: 28.6100,
-    avgRating: 4.5,
-    reviewCount: 420,
-    reviews: [
-      'Lahmacun ince ve çıtır.',
-      'Pideleri de çok güzel.',
-      'Aile ortamı, temiz mekan.',
-      'Fiyat performans harika.',
-    ],
-  },
-  // Ankara
-  {
-    id: '8',
-    name: 'Hacı Arif Bey',
-    cuisineTypes: ['turkish', 'kebab'],
-    priceRange: 'moderate' as const,
-    address: 'Kızılay, Ankara',
-    city: 'Ankara',
-    district: 'Çankaya',
-    latitude: 39.9208,
-    longitude: 32.8541,
-    avgRating: 4.6,
-    reviewCount: 980,
-    reviews: [
-      'Ankara kebabının en iyisi.',
-      'Lahmacun da var, güzel.',
-      'Servis kaliteli.',
-      'Fiyatlar biraz yüksek.',
-    ],
-  },
-];
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { foodQuery, location, radius = 10 } = body;
+    const { foodQuery, location, radius = 3 } = body; // Default 3km radius
 
     if (!foodQuery || !location) {
       return NextResponse.json<ApiResponse<null>>(
@@ -197,68 +17,107 @@ export async function POST(request: NextRequest) {
 
     console.log('[API] Search request:', { foodQuery, location, radius });
 
-    // Kullanıcı konumuna göre restoranları filtrele
-    const nearbyRestaurants = mockRestaurants
-      .map((restaurant) => {
-        const distance = calculateDistance(
-          location.latitude,
-          location.longitude,
-          restaurant.latitude,
-          restaurant.longitude
-        );
-        return { ...restaurant, distance };
-      })
-      .filter((r) => r.distance <= radius) // Radius içindekiler
-      .sort((a, b) => a.distance - b.distance); // Yakından uzağa sırala
+    // Search for restaurants using Google Places API
+    const radiusInMeters = radius * 1000; // Convert km to meters
+    const places = await searchNearbyRestaurants(
+      location.latitude,
+      location.longitude,
+      foodQuery,
+      radiusInMeters
+    );
 
-    console.log('[API] Nearby restaurants:', nearbyRestaurants.length);
+    console.log('[API] Found places:', places.length);
 
-    if (nearbyRestaurants.length === 0) {
+    if (places.length === 0) {
       return NextResponse.json<ApiResponse<SearchResult>>({
         success: true,
         data: {
           query: foodQuery,
           location,
           recommendations: [],
-          message: `${radius} km yarıçapında restoran bulunamadı. Daha geniş bir alan deneyin.`,
+          message: `${radius} km yarıçapında "${foodQuery}" için restoran bulunamadı.`,
           searchedAt: new Date(),
         },
       });
     }
 
-    // Analyze each restaurant with AI
-    const analyzedRestaurants: RestaurantWithAnalysis[] = await Promise.all(
-      nearbyRestaurants.map(async (restaurant) => {
-        const analysis = await analyzeReviews(
-          restaurant.name,
-          foodQuery,
-          restaurant.reviews
-        );
+    // Get details for top restaurants (limit to 5 to save API calls)
+    // Places are already sorted by prominence score from google-places.ts
+    // Filter for places with at least some reviews for quality
+    let topPlaces = places
+      .filter(p => (p.user_ratings_total || 0) >= 5 && (p.rating || 0) >= 3.5)
+      .slice(0, 5);
 
-        return {
-          id: restaurant.id,
-          name: restaurant.name,
-          slug: restaurant.name.toLowerCase().replace(/\s+/g, '-'),
-          cuisineTypes: restaurant.cuisineTypes,
-          priceRange: restaurant.priceRange,
-          address: restaurant.address,
-          city: restaurant.city,
-          district: restaurant.district,
-          latitude: restaurant.latitude,
-          longitude: restaurant.longitude,
-          avgRating: restaurant.avgRating,
-          reviewCount: restaurant.reviewCount,
-          distance: Math.round(restaurant.distance * 10) / 10, // 1 decimal
-          aiAnalysis: analysis,
+    if (topPlaces.length < 3) {
+      // If not enough quality places, take top results anyway
+      topPlaces = places.slice(0, 5);
+    }
+
+    console.log('[API] Top places selected:', topPlaces.map(p => `${p.name} (${p.rating}⭐, ${p.user_ratings_total} reviews)`));
+
+    // Get detailed info including reviews for each place
+    const analyzedRestaurants: RestaurantWithAnalysis[] = [];
+
+    for (const place of topPlaces) {
+      const details = await getPlaceDetails(place.place_id);
+
+      if (!details) continue;
+
+      // Extract reviews text
+      const reviewTexts = details.reviews?.map(r => r.text).filter(Boolean) || [];
+
+      // Calculate distance
+      const distance = calculateDistance(
+        location.latitude,
+        location.longitude,
+        details.geometry.location.lat,
+        details.geometry.location.lng
+      );
+
+      // Analyze reviews with AI (only if we have reviews)
+      let analysis;
+      if (reviewTexts.length > 0) {
+        analysis = await analyzeReviews(details.name, foodQuery, reviewTexts);
+      } else {
+        analysis = {
+          foodScore: details.rating ? Math.round(details.rating * 2) : 5,
+          positivePoints: ['Google\'da yüksek puan'],
+          negativePoints: [],
+          isRecommended: (details.rating || 0) >= 4,
+          summary: `${details.name} - Google puanı: ${details.rating || 'N/A'}`,
         };
-      })
-    );
+      }
+
+      // Parse address to get city and district
+      const addressParts = details.formatted_address.split(',').map(s => s.trim());
+      const district = addressParts[1] || '';
+      const city = addressParts[2] || 'İstanbul';
+
+      analyzedRestaurants.push({
+        id: details.place_id,
+        placeId: details.place_id,
+        name: details.name,
+        slug: details.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, ''),
+        cuisineTypes: place.types?.filter(t => !['restaurant', 'food', 'point_of_interest', 'establishment'].includes(t)) || [],
+        priceRange: getPriceRangeFromLevel(details.price_level),
+        address: details.formatted_address,
+        city: city.replace(/^\d+\s*/, ''), // Remove postal codes
+        district,
+        latitude: details.geometry.location.lat,
+        longitude: details.geometry.location.lng,
+        phone: details.formatted_phone_number,
+        website: details.website,
+        googleMapsUrl: details.url,
+        avgRating: details.rating || 0,
+        reviewCount: details.user_ratings_total || 0,
+        distance: Math.round(distance * 10) / 10,
+        aiAnalysis: analysis,
+      });
+    }
 
     // Sort by AI food score
     const sortedRestaurants = analyzedRestaurants
-      .filter((r) => r.aiAnalysis.foodScore > 0)
-      .sort((a, b) => b.aiAnalysis.foodScore - a.aiAnalysis.foodScore)
-      .slice(0, 5);
+      .sort((a, b) => b.aiAnalysis.foodScore - a.aiAnalysis.foodScore);
 
     // Generate recommendation message
     const message = await generateRecommendationMessage(
@@ -287,7 +146,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error('[API] /ai/recommend error:', error);
     return NextResponse.json<ApiResponse<null>>(
-      { success: false, error: 'Bir hata oluştu' },
+      { success: false, error: 'Bir hata oluştu: ' + (error instanceof Error ? error.message : 'Bilinmeyen hata') },
       { status: 500 }
     );
   }

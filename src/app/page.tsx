@@ -11,7 +11,7 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
 
-  const handleSearch = async (foodQuery: string, location: { latitude: number; longitude: number }) => {
+  const handleSearch = async (foodQuery: string, location: { latitude: number; longitude: number }, radius: number) => {
     setIsLoading(true);
     setHasSearched(true);
 
@@ -19,7 +19,7 @@ export default function Home() {
       const response = await fetch('/api/ai/recommend', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ foodQuery, location }),
+        body: JSON.stringify({ foodQuery, location, radius }),
       });
 
       const data = await response.json();
