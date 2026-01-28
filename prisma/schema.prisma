@@ -1,0 +1,205 @@
+// Nerede Yesem? - Database Schema
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum PriceRange {
+  budget
+  moderate
+  expensive
+  luxury
+}
+
+enum UserRole {
+  user
+  restaurant_owner
+  admin
+}
+
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  passwordHash  String    @map("password_hash")
+  name          String
+  avatarUrl     String?   @map("avatar_url")
+  role          UserRole  @default(user)
+  preferences   Json      @default("{\"cuisines\": [], \"priceRange\": [], \"notifications\": true}")
+  lastLatitude  Decimal?  @map("last_latitude") @db.Decimal(10, 8)
+  lastLongitude Decimal?  @map("last_longitude") @db.Decimal(11, 8)
+  isActive      Boolean   @default(true) @map("is_active")
+  emailVerified Boolean   @default(false) @map("email_verified")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  reviews       Review[]
+  favorites     Favorite[]
+  conversations AIConversation[]
+  searches      SearchHistory[]
+  visits        VisitHistory[]
+
+  @@map("users")
+}
+
+model Restaurant {
+  id            String     @id @default(uuid())
+  name          String
+  slug          String     @unique
+  description   String?
+  cuisineTypes  String[]   @map("cuisine_types")
+  priceRange    PriceRange @map("price_range")
+  address       String
+  city          String
+  district      String?
+  latitude      Decimal    @db.Decimal(10, 8)
+  longitude     Decimal    @db.Decimal(11, 8)
+  phone         String?
+  website       String?
+  instagram     String?
+  workingHours  Json       @default("{}") @map("working_hours")
+  features      Json       @default("{}")
+  images        String[]   @default([])
+  coverImage    String?    @map("cover_image")
+  avgRating     Decimal    @default(0) @map("avg_rating") @db.Decimal(2, 1)
+  reviewCount   Int        @default(0) @map("review_count")
+  favoriteCount Int        @default(0) @map("favorite_count")
+  viewCount     Int        @default(0) @map("view_count")
+  isActive      Boolean    @default(true) @map("is_active")
+  isVerified    Boolean    @default(false) @map("is_verified")
+  createdAt     DateTime   @default(now()) @map("created_at")
+  updatedAt     DateTime   @updatedAt @map("updated_at")
+
+  reviews       Review[]
+  favorites     Favorite[]
+  visits        VisitHistory[]
+  menus         Menu[]
+
+  @@index([city])
+  @@index([priceRange])
+  @@index([avgRating(sort: Desc)])
+  @@map("restaurants")
+}
+
+model Review {
+  id            String    @id @default(uuid())
+  userId        String    @map("user_id")
+  restaurantId  String    @map("restaurant_id")
+  rating        Int
+  foodRating    Int?      @map("food_rating")
+  serviceRating Int?      @map("service_rating")
+  ambianceRating Int?     @map("ambiance_rating")
+  title         String?
+  content       String
+  images        String[]  @default([])
+  helpfulCount  Int       @default(0) @map("helpful_count")
+  visitDate     DateTime? @map("visit_date")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  restaurant    Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, restaurantId])
+  @@index([restaurantId])
+  @@map("reviews")
+}
+
+model Favorite {
+  id            String    @id @default(uuid())
+  userId        String    @map("user_id")
+  restaurantId  String    @map("restaurant_id")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  restaurant    Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, restaurantId])
+  @@map("favorites")
+}
+
+model AIConversation {
+  id                     String    @id @default(uuid())
+  userId                 String    @map("user_id")
+  messages               Json      @default("[]")
+  recommendedRestaurants String[]  @map("recommended_restaurants")
+  context                Json      @default("{}")
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+
+  user                   User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("ai_conversations")
+}
+
+model SearchHistory {
+  id          String    @id @default(uuid())
+  userId      String?   @map("user_id")
+  query       String
+  filters     Json      @default("{}")
+  resultCount Int       @default(0) @map("result_count")
+  sessionId   String?   @map("session_id")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  user        User?     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("search_history")
+}
+
+model VisitHistory {
+  id            String    @id @default(uuid())
+  userId        String    @map("user_id")
+  restaurantId  String    @map("restaurant_id")
+  visitType     String    @default("view") @map("visit_type")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  restaurant    Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([restaurantId])
+  @@map("visit_history")
+}
+
+model Menu {
+  id            String    @id @default(uuid())
+  restaurantId  String    @map("restaurant_id")
+  name          String
+  description   String?
+  isActive      Boolean   @default(true) @map("is_active")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  restaurant    Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  items         MenuItem[]
+
+  @@map("menus")
+}
+
+model MenuItem {
+  id            String    @id @default(uuid())
+  menuId        String    @map("menu_id")
+  name          String
+  description   String?
+  price         Decimal   @db.Decimal(10, 2)
+  imageUrl      String?   @map("image_url")
+  category      String?
+  isVegetarian  Boolean   @default(false) @map("is_vegetarian")
+  isVegan       Boolean   @default(false) @map("is_vegan")
+  isGlutenFree  Boolean   @default(false) @map("is_gluten_free")
+  isSpicy       Boolean   @default(false) @map("is_spicy")
+  isPopular     Boolean   @default(false) @map("is_popular")
+  isChefSpecial Boolean   @default(false) @map("is_chef_special")
+  isAvailable   Boolean   @default(true) @map("is_available")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  menu          Menu      @relation(fields: [menuId], references: [id], onDelete: Cascade)
+
+  @@map("menu_items")
+}
