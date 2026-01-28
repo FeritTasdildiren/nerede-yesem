@@ -41,16 +41,27 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Get details for top restaurants (limit to 5 to save API calls)
-    // Places are already sorted by prominence score from google-places.ts
-    // Filter for places with at least some reviews for quality
-    let topPlaces = places
-      .filter(p => (p.user_ratings_total || 0) >= 5 && (p.rating || 0) >= 3.5)
-      .slice(0, 5);
+    // Filter for quality places: minimum 50 reviews AND 4+ stars
+    const qualityPlaces = places.filter(p =>
+      (p.user_ratings_total || 0) >= 50 && (p.rating || 0) >= 4.0
+    );
 
-    if (topPlaces.length < 3) {
-      // If not enough quality places, take top results anyway
-      topPlaces = places.slice(0, 5);
+    console.log(`[API] Quality filter: ${qualityPlaces.length}/${places.length} places have 50+ reviews and 4+ stars`);
+
+    // If not enough quality places, relax the filter
+    let topPlaces;
+    if (qualityPlaces.length >= 3) {
+      topPlaces = qualityPlaces.slice(0, 5);
+    } else {
+      // Fallback: minimum 10 reviews and 3.5 stars
+      console.log('[API] Not enough quality places, using relaxed filter');
+      topPlaces = places
+        .filter(p => (p.user_ratings_total || 0) >= 10 && (p.rating || 0) >= 3.5)
+        .slice(0, 5);
+
+      if (topPlaces.length === 0) {
+        topPlaces = places.slice(0, 5);
+      }
     }
 
     console.log('[API] Top places selected:', topPlaces.map(p => `${p.name} (${p.rating}⭐, ${p.user_ratings_total} reviews)`));
