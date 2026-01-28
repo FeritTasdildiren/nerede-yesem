@@ -100,7 +100,7 @@ export async function getPlaceDetails(placeId: string): Promise<PlaceDetails | n
   const data = await response.json();
 
   if (data.status !== 'OK') {
-    console.error('Google Places Details API error:', data.status, data.error_message);
+    console.error('Google Places Details API error:', data.status, data.error_message, 'for placeId:', placeId);
     return null;
   }
 

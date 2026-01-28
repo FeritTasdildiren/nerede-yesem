@@ -69,10 +69,17 @@ export async function POST(request: NextRequest) {
     // Get detailed info including reviews for each place
     const analyzedRestaurants: RestaurantWithAnalysis[] = [];
 
+    console.log('[API] Fetching details for', topPlaces.length, 'places...');
+
     for (const place of topPlaces) {
+      console.log(`[API] Getting details for: ${place.name} (${place.place_id})`);
       const details = await getPlaceDetails(place.place_id);
 
-      if (!details) continue;
+      if (!details) {
+        console.log(`[API] ⚠️ Failed to get details for: ${place.name}`);
+        continue;
+      }
+      console.log(`[API] ✓ Got details for: ${place.name} (${details.reviews?.length || 0} reviews)`);
 
       // Extract reviews text
       const reviewTexts = details.reviews?.map(r => r.text).filter(Boolean) || [];
@@ -125,6 +132,8 @@ export async function POST(request: NextRequest) {
         aiAnalysis: analysis,
       });
     }
+
+    console.log(`[API] Successfully processed ${analyzedRestaurants.length}/${topPlaces.length} restaurants`);
 
     // Sort by AI food score
     const sortedRestaurants = analyzedRestaurants
