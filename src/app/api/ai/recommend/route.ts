@@ -298,7 +298,9 @@ export async function POST(request: NextRequest) {
       }
 
       // Analyze reviews with AI
+      console.log(`[API] Running AI analysis for ${discovered.name} with ${reviewTexts.length} reviews`);
       const analysis = await analyzeReviews(details.name, foodQuery, reviewTexts);
+      console.log(`[API] AI result for ${discovered.name}: foodScore=${analysis.foodScore}, recommended=${analysis.isRecommended}`);
 
       // Parse address
       const addressParts = details.formatted_address.split(',').map(s => s.trim());
@@ -336,11 +338,11 @@ export async function POST(request: NextRequest) {
     console.log(`[API] API calls needed: ${apiCallsNeeded}/${allScrapeAttempts.length}`);
 
     const results = await Promise.all(allScrapeAttempts.map(processRestaurant));
-    const analyzedRestaurants = results
-      .filter((r): r is RestaurantWithAnalysis => r !== null)
-      .filter(r => r.aiAnalysis.foodScore > 0);
+    const nonNullResults = results.filter((r): r is RestaurantWithAnalysis => r !== null);
+    console.log(`[API] Non-null results: ${nonNullResults.length}, scores: [${nonNullResults.map(r => `${r.name}:${r.aiAnalysis.foodScore}`).join(', ')}]`);
+    const analyzedRestaurants = nonNullResults.filter(r => r.aiAnalysis.foodScore > 0);
 
-    console.log(`[API] Processed ${analyzedRestaurants.length} restaurants (parallel)`);
+    console.log(`[API] Processed ${analyzedRestaurants.length} restaurants after foodScore>0 filter`);
 
     // Sort by keyword rating (scrape edilen yorumların yıldız ortalaması)
     // Fallback to AI food score if keyword rating is not available
