@@ -112,31 +112,70 @@ export class GoogleMapsScraper {
     const startTime = Date.now();
     let proxy: Proxy | null = null;
     let browser: Browser | null = null;
+    const maxProxyAttempts = 10;
+    const proxyTimeout = 10000; // 10sn per proxy attempt
 
     try {
-      proxy = await proxyService.getProxy(placeId, 'medium');
-      browser = await this.initBrowser(proxy || undefined);
-      const page = await this.createPage(browser, proxy || undefined);
-
-      // Navigate to Google Maps place
       const reviewsUrl = this.buildReviewsUrl(googleMapsUrl, placeId);
-      console.log(`[Scraper] Navigating to: ${reviewsUrl}`);
 
-      await page.goto(reviewsUrl, {
-        waitUntil: 'networkidle0',
-        timeout: this.timeout,
-      });
+      // Retry loop: try different proxies until one connects
+      let page: Page | null = null;
+      let lastError: Error | null = null;
+
+      for (let attempt = 1; attempt <= maxProxyAttempts; attempt++) {
+        try {
+          proxy = await proxyService.getProxy(placeId, 'high');
+          browser = await this.initBrowser(proxy || undefined);
+          page = await this.createPage(browser, proxy || undefined);
+
+          console.log(`[Scraper] Proxy attempt ${attempt}/${maxProxyAttempts}: ${proxy?.address || 'direct'} → ${reviewsUrl}`);
+
+          await page.goto(reviewsUrl, {
+            waitUntil: 'networkidle0',
+            timeout: proxyTimeout,
+          });
+
+          // Success - page loaded
+          console.log(`[Scraper] Connected via proxy ${proxy?.address} (attempt ${attempt})`);
+          break;
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error));
+          console.warn(`[Scraper] Proxy attempt ${attempt} failed (${proxy?.address}): ${lastError.message.substring(0, 80)}`);
+
+          if (proxy) {
+            await proxyService.recordUsage({
+              proxyAddress: proxy.address,
+              tier: proxy.tier,
+              targetPlaceId: placeId,
+              success: false,
+              responseTimeMs: Date.now() - startTime,
+              errorMessage: lastError.message,
+            });
+          }
+
+          // Close failed browser before retrying
+          if (browser) { await browser.close(); browser = null; }
+          page = null;
+
+          if (attempt === maxProxyAttempts) {
+            throw new Error(`All ${maxProxyAttempts} proxy attempts failed. Last: ${lastError.message}`);
+          }
+        }
+      }
+
+      if (!page || !browser) {
+        throw new Error('No page available after proxy attempts');
+      }
 
       await this.delay(3000);
 
       // Accept cookies if prompted
       await this.acceptCookies(page);
 
-      // Debug: Take screenshot to see page state
       const pageTitle = await page.title();
       console.log(`[Scraper] Page title: ${pageTitle}`);
 
-      // Wait for place to load - look for the main content
+      // Wait for place to load
       try {
         await page.waitForSelector('div[role="main"]', { timeout: 5000 });
         console.log('[Scraper] Main content loaded');
@@ -144,11 +183,11 @@ export class GoogleMapsScraper {
         console.log('[Scraper] Could not find main content');
       }
 
-      // Click reviews tab if not already on it
+      // Click reviews tab
       await this.clickReviewsTab(page);
       await this.delay(2000);
 
-      // Wait for reviews to load - check for scrollable review container
+      // Wait for reviews to load
       try {
         await page.waitForSelector('div[class*="m6QErb"], div[data-review-id], div[role="main"]', { timeout: 5000 });
         console.log('[Scraper] Reviews section found');
@@ -192,17 +231,6 @@ export class GoogleMapsScraper {
       };
     } catch (error) {
       console.error('[Scraper] Error:', error);
-
-      if (proxy) {
-        await proxyService.recordUsage({
-          proxyAddress: proxy.address,
-          tier: proxy.tier,
-          targetPlaceId: placeId,
-          success: false,
-          responseTimeMs: Date.now() - startTime,
-          errorMessage: error instanceof Error ? error.message : 'Unknown error',
-        });
-      }
 
       return {
         success: false,
@@ -578,15 +606,25 @@ export class GoogleMapsScraper {
     const debugInfo = await page.evaluate(() => {
       const info: string[] = [];
       info.push(`HTML length: ${document.body.innerHTML.length}`);
-      const hasReviewsSection = document.querySelector('div[class*="m6QErb"]');
-      info.push(`Reviews section: ${hasReviewsSection ? 'yes' : 'no'}`);
-      // Count elements with star aria-labels (review indicators)
-      const starSpans = document.querySelectorAll('span[role="img"][aria-label*="yıldız"]');
-      info.push(`Star spans: ${starSpans.length}`);
-      // Count buttons (potential "Diğer" buttons)
-      const buttons = document.querySelectorAll('button');
+      const reviewsContainer = document.querySelector('div[class*="m6QErb"][class*="DxyBCb"]') ||
+                               document.querySelector('div[class*="m6QErb"]');
+      info.push(`Reviews container: ${reviewsContainer ? `yes (${reviewsContainer.children.length} children)` : 'no'}`);
+      // Count spans with role="img" (old method)
+      const roleImgSpans = document.querySelectorAll('span[role="img"][aria-label*="yıldız"]');
+      info.push(`Star spans (role=img): ${roleImgSpans.length}`);
+      // Count spans with exactly 5 child spans (structural star detection)
+      let fiveChildSpans = 0;
+      document.querySelectorAll('span').forEach(span => {
+        if (span.children.length === 5 && Array.from(span.children).every(c => c.tagName === 'SPAN')) {
+          fiveChildSpans++;
+        }
+      });
+      info.push(`Star spans (5-child): ${fiveChildSpans}`);
+      // Count Diğer buttons
       let digerCount = 0;
-      buttons.forEach(b => { if ((b.textContent || '').includes('Diğer')) digerCount++; });
+      document.querySelectorAll('button, span').forEach(el => {
+        if ((el.textContent || '').trim() === 'Diğer' || (el.textContent || '').trim() === 'More') digerCount++;
+      });
       info.push(`Diğer buttons: ${digerCount}`);
       return info;
     });
@@ -596,7 +634,8 @@ export class GoogleMapsScraper {
       // Expand all "Diğer" (More) buttons first
       await this.expandReviews(page);
 
-      // Extract reviews using structural XPath approach
+      // Extract reviews using structural DOM approach
+      // Based on XPath: .../div[N]/div/div/div[4]/div[1]/span[1] (star container with 5 child spans)
       const newReviews = await page.evaluate(() => {
         const extracted: Array<{
           authorName: string;
@@ -606,86 +645,110 @@ export class GoogleMapsScraper {
           pricePerPerson?: string;
         }> = [];
 
-        // Strategy: Find all star rating spans (each review has one), then navigate
-        // up to the review container and extract sibling data.
-        // Star rating XPath pattern: .../div[4]/div[1]/span[1] relative to review root
-        // Author XPath pattern: .../div[2]/div[2]/div[1]/button/div[1] relative to review root
+        // Find the reviews scrollable container
+        const container = document.querySelector('div[class*="m6QErb"][class*="DxyBCb"]') ||
+                          document.querySelector('div[class*="m6QErb"]');
+        if (!container) return extracted;
 
-        // Find all span elements with star aria-labels
-        const starSpans = document.querySelectorAll('span[role="img"][aria-label*="yıldız"], span[role="img"][aria-label*="star"]');
-
-        starSpans.forEach((starSpan) => {
+        // Iterate over container's direct children to find review cards
+        const children = container.children;
+        for (let idx = 0; idx < children.length; idx++) {
           try {
-            // Navigate up to find the review container.
-            // Star is at: reviewRoot > div > div[4] > div[1] > span[1]
-            // So we go up: span -> div[1] -> div[4] -> div (inner wrapper) -> div (review root)
-            const div1 = starSpan.parentElement; // div[1] (contains star + date)
-            if (!div1) return;
-            const div4 = div1.parentElement; // div[4] (contains rating row + text)
-            if (!div4) return;
-            const innerWrapper = div4.parentElement; // inner div wrapper
-            if (!innerWrapper) return;
-            const reviewRoot = innerWrapper.parentElement; // review root div
-            if (!reviewRoot) return;
+            const reviewCard = children[idx] as HTMLElement;
 
-            // Verify this is actually a review (not a place rating)
-            // Review roots typically have specific depth of nested divs
-            // and contain both author info and review text
-            const allDivChildren = innerWrapper.children;
-            if (allDivChildren.length < 2) return;
+            // Drill into review structure: reviewCard > div > div = innerWrapper
+            const level1 = reviewCard.querySelector(':scope > div');
+            if (!level1) continue;
+            const innerWrapper = level1.querySelector(':scope > div');
+            if (!innerWrapper || innerWrapper.children.length < 3) continue;
 
-            // Extract rating from star span aria-label
+            // Find the star rating: a span with exactly 5 child spans
+            // Located at: innerWrapper > div[4] > div[1] > span[1]
+            let starContainer: Element | null = null;
+            let ratingSection: Element | null = null;
+            let ratingRow: Element | null = null;
+
+            for (const section of Array.from(innerWrapper.children)) {
+              const firstChildDiv = section.querySelector(':scope > div');
+              if (!firstChildDiv) continue;
+              const candidateSpan = firstChildDiv.querySelector(':scope > span');
+              if (candidateSpan && candidateSpan.children.length === 5) {
+                const allSpans = Array.from(candidateSpan.children).every(c => c.tagName === 'SPAN');
+                if (allSpans) {
+                  starContainer = candidateSpan;
+                  ratingSection = section as Element;
+                  ratingRow = firstChildDiv;
+                  break;
+                }
+              }
+            }
+
+            if (!starContainer || !ratingSection) continue; // Not a review card
+
+            // Extract rating from star container aria-label
             let rating = 0;
-            const label = starSpan.getAttribute('aria-label') || '';
+            const label = starContainer.getAttribute('aria-label') || '';
             const ratingMatch = label.match(/([\d,\.]+)\s*(yıldız|star)/i);
             if (ratingMatch) {
-              rating = parseInt(ratingMatch[1].replace(',', '.'));
+              rating = parseFloat(ratingMatch[1].replace(',', '.'));
+            }
+            // Fallback: count filled stars by CSS class
+            // Filled star has class "elGi1d", empty star has class "gnOR4e"
+            if (rating === 0) {
+              const filledStars = starContainer.querySelectorAll('.elGi1d');
+              if (filledStars.length > 0) {
+                rating = filledStars.length;
+              }
+            }
+            // Fallback: check parent elements for rating info
+            if (rating === 0) {
+              const parentLabel = (ratingRow?.getAttribute('aria-label') || '') +
+                                  (ratingSection.getAttribute('aria-label') || '');
+              const parentMatch = parentLabel.match(/([\d,\.]+)/);
+              if (parentMatch) {
+                rating = parseFloat(parentMatch[1].replace(',', '.'));
+              }
             }
 
             // Extract author name
-            // Pattern: innerWrapper > div[2] (author section) > div[2] > div[1] > button > div[1]
             let authorName = 'Anonim';
-            const authorSection = innerWrapper.querySelector('button div');
-            if (authorSection?.textContent) {
-              const name = authorSection.textContent.trim();
+            const authorButton = innerWrapper.querySelector('button div');
+            if (authorButton?.textContent) {
+              const name = authorButton.textContent.trim();
               if (name.length > 0 && name.length < 100) {
                 authorName = name;
               }
             }
 
-            // Extract review text
-            // Pattern: div4 > div[2] (text container)
+            // Extract review text from ratingSection's children (skip the rating row)
             let text = '';
-            // div4 children: div[1]=rating row, div[2]=text
-            for (let i = 0; i < div4.children.length; i++) {
-              const child = div4.children[i] as HTMLElement;
-              // Skip the rating row (contains span with stars)
-              if (child.querySelector('span[role="img"]')) continue;
-              // The text container - get full text content
+            for (let i = 0; i < ratingSection.children.length; i++) {
+              const child = ratingSection.children[i] as HTMLElement;
+              if (child === ratingRow) continue;
               const candidateText = (child.textContent || '').trim();
               if (candidateText.length > 10) {
-                // Remove "Diğer" button text from end if present
                 text = candidateText.replace(/\s*Diğer\s*$/, '').trim();
                 break;
               }
             }
 
-            // Extract relative time (second span in rating row)
-            // Pattern: div[1] > span[2]
+            // Extract relative time from rating row spans
             let relativeTime: string | undefined;
-            const spans = div1.querySelectorAll('span');
-            for (const span of spans) {
-              const spanText = (span.textContent || '').trim();
-              // Time patterns: "2 ay önce", "3 hafta önce", "1 yıl önce"
-              if (spanText.match(/(önce|ago|gün|hafta|ay|yıl|week|month|year|day)/i)) {
-                relativeTime = spanText;
-                break;
+            if (ratingRow) {
+              const spans = ratingRow.querySelectorAll('span');
+              for (const span of spans) {
+                if (span === starContainer || starContainer.contains(span)) continue;
+                const spanText = (span.textContent || '').trim();
+                if (spanText.match(/(önce|ago|gün|hafta|ay|yıl|week|month|year|day)/i)) {
+                  relativeTime = spanText;
+                  break;
+                }
               }
             }
 
             // Extract price per person if present
             let pricePerPerson: string | undefined;
-            const allText = reviewRoot.textContent || '';
+            const allText = reviewCard.textContent || '';
             const priceMatch = allText.match(/kişi başı[:\s]*([\d.,]+\s*₺)/i);
             if (priceMatch) {
               pricePerPerson = priceMatch[1];
@@ -701,9 +764,9 @@ export class GoogleMapsScraper {
               });
             }
           } catch {
-            // Skip malformed reviews
+            // Skip malformed review cards
           }
-        });
+        }
 
         return extracted;
       });
