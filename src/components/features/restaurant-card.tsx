@@ -128,7 +128,7 @@ export function RestaurantCard({ restaurant, rank }: RestaurantCardProps) {
               <span>•</span>
               <span>{restaurant.reviewCount} yorum</span>
             </div>
-            {restaurant.keywordRating && restaurant.searchQuery && (
+            {restaurant.keywordRating && restaurant.searchQuery && restaurant.aiAnalysis.foodScore > 0 && (
               <div className="flex items-center gap-1 text-orange-600 dark:text-orange-400 font-medium">
                 <span>⭐ {restaurant.keywordRating} Bu Mekanın {restaurant.searchQuery.charAt(0).toUpperCase() + restaurant.searchQuery.slice(1)} Puanı</span>
               </div>

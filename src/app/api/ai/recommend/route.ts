@@ -260,10 +260,9 @@ export async function POST(request: NextRequest) {
         }
         details = apiDetails;
 
-        // If scraping failed but we need reviews, use API reviews
+        // API reviews disabled - only use scraped reviews
         if (reviewTexts.length === 0) {
-          reviewTexts = details.reviews?.map(r => r.text).filter(Boolean) || [];
-          console.log(`[API] Using ${reviewTexts.length} Google API reviews for ${discovered.name}`);
+          console.log(`[API] No scraped reviews for ${discovered.name}, skipping AI analysis`);
         }
       } else {
         // No placeId and no scrape data - use discovered data directly
@@ -292,19 +291,14 @@ export async function POST(request: NextRequest) {
         details.geometry.location.lng
       );
 
-      // Analyze reviews with AI
-      let analysis;
-      if (reviewTexts.length > 0) {
-        analysis = await analyzeReviews(details.name, foodQuery, reviewTexts);
-      } else {
-        analysis = {
-          foodScore: details.rating ? Math.round(details.rating * 2) : 5,
-          positivePoints: ['Google\'da yüksek puan'],
-          negativePoints: [],
-          isRecommended: (details.rating || 0) >= 4,
-          summary: `${details.name} - Google puanı: ${details.rating || 'N/A'}`,
-        };
+      // Only include restaurants with scraped reviews
+      if (reviewTexts.length === 0) {
+        console.log(`[API] Excluding ${discovered.name}: no scraped reviews`);
+        return null;
       }
+
+      // Analyze reviews with AI
+      const analysis = await analyzeReviews(details.name, foodQuery, reviewTexts);
 
       // Parse address
       const addressParts = details.formatted_address.split(',').map(s => s.trim());
@@ -342,7 +336,9 @@ export async function POST(request: NextRequest) {
     console.log(`[API] API calls needed: ${apiCallsNeeded}/${allScrapeAttempts.length}`);
 
     const results = await Promise.all(allScrapeAttempts.map(processRestaurant));
-    const analyzedRestaurants = results.filter((r): r is RestaurantWithAnalysis => r !== null);
+    const analyzedRestaurants = results
+      .filter((r): r is RestaurantWithAnalysis => r !== null)
+      .filter(r => r.aiAnalysis.foodScore > 0);
 
     console.log(`[API] Processed ${analyzedRestaurants.length} restaurants (parallel)`);
 
