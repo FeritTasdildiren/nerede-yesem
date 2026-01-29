@@ -13,9 +13,8 @@ export const env = {
   GOOGLE_PLACES_API_KEY: process.env.GOOGLE_PLACES_API_KEY || '',
   GOOGLE_MAPS_API_KEY: process.env.GOOGLE_MAPS_API_KEY || '',
 
-  // Proxy API
-  PROXY_API_URL: process.env.PROXY_API_URL || 'http://127.0.0.1:8000',
-  PROXY_API_KEY: process.env.PROXY_API_KEY || '',
+  // Webshare Proxy
+  WEBSHARE_PROXY_URL: process.env.WEBSHARE_PROXY_URL || '',
 
   // Cache Settings
   CACHE_TTL_DAYS: parseInt(process.env.CACHE_TTL_DAYS || '30', 10),

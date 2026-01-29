@@ -1,143 +1,119 @@
-// Proxy Service - Manages proxy rotation for scraping
+// Proxy Service - Webshare.io proxy list with round-robin rotation
 import { prisma } from '@/lib/db';
 import { env } from '@/lib/config/env';
-import { Proxy, ProxyTier, ProxyUsageRecord } from '@/types/scraping';
-
-// Response from GET /api/v1/random/{tier}
-interface ProxyApiResponse {
-  ip: string;
-  port: number;
-  protocol: string | null;
-  country: string | null;
-  anonymity: string | null;
-  quality_score: number;
-  success_rate: number;
-  avg_response_time: number;
-}
+import { Proxy, ProxyUsageRecord } from '@/types/scraping';
 
 export class ProxyService {
-  private apiUrl: string;
-  private apiKey: string;
+  private proxies: Proxy[] = [];
+  private currentIndex: number = 0;
+  private lastFetchTime: number = 0;
+  private refreshIntervalMs = 6 * 60 * 60 * 1000; // 6 hours
   private usedProxies: Map<string, Set<string>> = new Map(); // placeId -> Set<proxyAddress>
 
-  constructor() {
-    this.apiUrl = env.PROXY_API_URL;
-    this.apiKey = env.PROXY_API_KEY;
-  }
-
   /**
-   * Get a proxy for scraping a specific place
-   * Tries high tier first, falls back to medium tier
+   * Get a proxy for scraping a specific place.
+   * Uses round-robin rotation and skips proxies already used for this placeId.
    */
-  async getProxy(placeId: string, preferredTier: ProxyTier = 'high'): Promise<Proxy | null> {
-    const tiers: ProxyTier[] = preferredTier === 'high'
-      ? ['high', 'medium']
-      : ['medium', 'high'];
+  async getProxy(placeId: string): Promise<Proxy | null> {
+    await this.ensureProxiesLoaded();
 
-    for (const tier of tiers) {
-      const proxy = await this.fetchProxy(tier, placeId);
-      if (proxy) {
-        return proxy;
-      }
+    if (this.proxies.length === 0) {
+      console.warn('[ProxyService] No proxies available');
+      return null;
     }
 
-    console.warn(`[ProxyService] No proxy available for place: ${placeId}`);
-    return null;
-  }
+    const usedForPlace = this.usedProxies.get(placeId) || new Set();
+    const totalProxies = this.proxies.length;
 
-  /**
-   * Fetch a proxy from the API
-   */
-  private async fetchProxy(tier: ProxyTier, placeId: string): Promise<Proxy | null> {
-    try {
-      // Get previously used proxies for this place
-      const usedForPlace = this.usedProxies.get(placeId) || new Set();
+    // Try each proxy in round-robin order, skip already-used ones for this placeId
+    for (let i = 0; i < totalProxies; i++) {
+      const proxy = this.proxies[this.currentIndex];
+      this.currentIndex = (this.currentIndex + 1) % totalProxies;
 
-      // GET /api/v1/random/{tier} - returns a single random proxy
-      const response = await fetch(`${this.apiUrl}/api/v1/random/${tier}`, {
-        method: 'GET',
-        headers: {
-          'X-API-Key': this.apiKey,
-        },
-      });
-
-      if (!response.ok) {
-        if (response.status === 404) {
-          console.warn(`[ProxyService] No ${tier} proxy found`);
-        } else {
-          console.error(`[ProxyService] API error: ${response.status}`);
-        }
-        return null;
+      if (usedForPlace.has(proxy.address)) {
+        continue;
       }
 
-      const data: ProxyApiResponse = await response.json();
-
-      if (!data.ip || !data.port) {
-        console.warn(`[ProxyService] Invalid proxy response for ${tier}`);
-        return null;
-      }
-
-      // Skip if this proxy was already used for this place
-      if (usedForPlace.has(data.ip)) {
-        console.log(`[ProxyService] Proxy ${data.ip} already used for ${placeId}, retrying...`);
-        // One retry with same tier
-        return this.fetchProxyRetry(tier, placeId, usedForPlace);
-      }
-
-      const proxy: Proxy = {
-        address: data.ip,
-        port: data.port,
-        username: undefined,
-        password: undefined,
-        tier: tier,
-        protocol: (data.protocol as 'http' | 'https' | 'socks5') || 'http',
-      };
-
-      // Track this proxy as used for this place
+      // Track as used for this placeId
       if (!this.usedProxies.has(placeId)) {
         this.usedProxies.set(placeId, new Set());
       }
       this.usedProxies.get(placeId)!.add(proxy.address);
 
-      console.log(`[ProxyService] Got ${tier} proxy: ${data.ip}:${data.port} (score: ${data.quality_score}, rate: ${data.success_rate})`);
+      console.log(`[ProxyService] Got proxy: ${proxy.address}:${proxy.port} for ${placeId}`);
       return proxy;
-    } catch (error) {
-      console.error('[ProxyService] Failed to fetch proxy:', error);
-      return null;
     }
+
+    console.warn(`[ProxyService] All ${totalProxies} proxies already used for ${placeId}`);
+    return null;
   }
 
   /**
-   * Retry fetching a proxy if the first one was already used
+   * Ensure proxy list is loaded and not stale
    */
-  private async fetchProxyRetry(tier: ProxyTier, placeId: string, usedForPlace: Set<string>): Promise<Proxy | null> {
+  private async ensureProxiesLoaded(): Promise<void> {
+    if (this.proxies.length > 0 && Date.now() - this.lastFetchTime < this.refreshIntervalMs) {
+      return;
+    }
+    await this.fetchProxyList();
+  }
+
+  /**
+   * Fetch proxy list from Webshare download URL
+   * Format: IP:PORT:USERNAME:PASSWORD (one per line)
+   */
+  private async fetchProxyList(): Promise<void> {
+    const downloadUrl = env.WEBSHARE_PROXY_URL;
+    if (!downloadUrl) {
+      console.error('[ProxyService] WEBSHARE_PROXY_URL is not set');
+      return;
+    }
+
     try {
-      const response = await fetch(`${this.apiUrl}/api/v1/random/${tier}`, {
-        method: 'GET',
-        headers: {
-          'X-API-Key': this.apiKey,
-        },
-      });
+      console.log('[ProxyService] Fetching proxy list from Webshare...');
+      const response = await fetch(downloadUrl);
 
-      if (!response.ok) return null;
+      if (!response.ok) {
+        console.error(`[ProxyService] Failed to fetch proxy list: ${response.status}`);
+        return;
+      }
 
-      const data: ProxyApiResponse = await response.json();
-      if (!data.ip || !data.port || usedForPlace.has(data.ip)) return null;
+      const text = await response.text();
+      const lines = text.trim().split('\n').filter((line) => line.trim().length > 0);
 
-      const proxy: Proxy = {
-        address: data.ip,
-        port: data.port,
-        username: undefined,
-        password: undefined,
-        tier: tier,
-        protocol: (data.protocol as 'http' | 'https' | 'socks5') || 'http',
-      };
+      const parsed: Proxy[] = [];
+      for (const line of lines) {
+        const parts = line.trim().split(':');
+        if (parts.length < 4) {
+          console.warn(`[ProxyService] Skipping invalid line: ${line}`);
+          continue;
+        }
 
-      this.usedProxies.get(placeId)!.add(proxy.address);
-      console.log(`[ProxyService] Got ${tier} proxy (retry): ${data.ip}:${data.port}`);
-      return proxy;
-    } catch {
-      return null;
+        const [address, portStr, username, password] = parts;
+        const port = parseInt(portStr, 10);
+        if (!address || isNaN(port)) {
+          console.warn(`[ProxyService] Skipping invalid proxy: ${line}`);
+          continue;
+        }
+
+        parsed.push({
+          address,
+          port,
+          username,
+          password,
+          protocol: 'http',
+        });
+      }
+
+      if (parsed.length > 0) {
+        this.proxies = parsed;
+        this.lastFetchTime = Date.now();
+        console.log(`[ProxyService] Loaded ${parsed.length} proxies from Webshare`);
+      } else {
+        console.error('[ProxyService] No valid proxies parsed from response');
+      }
+    } catch (error) {
+      console.error('[ProxyService] Failed to fetch proxy list:', error);
     }
   }
 
@@ -149,7 +125,7 @@ export class ProxyService {
       await prisma.proxyUsage.create({
         data: {
           proxyAddress: record.proxyAddress,
-          tier: record.tier,
+          tier: record.tier || 'high',
           targetPlaceId: record.targetPlaceId,
           success: record.success,
           responseTimeMs: record.responseTimeMs,
@@ -232,17 +208,12 @@ export class ProxyService {
   }
 
   /**
-   * Check if proxy API is available
+   * Check if proxy service is available (has proxies loaded)
    */
   async healthCheck(): Promise<boolean> {
     try {
-      const response = await fetch(`${this.apiUrl}/health`, {
-        method: 'GET',
-        headers: {
-          'X-API-Key': this.apiKey,
-        },
-      });
-      return response.ok;
+      await this.ensureProxiesLoaded();
+      return this.proxies.length > 0;
     } catch {
       return false;
     }

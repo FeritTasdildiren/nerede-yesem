@@ -8,7 +8,7 @@ export interface Proxy {
   port: number;
   username?: string;
   password?: string;
-  tier: ProxyTier;
+  tier?: ProxyTier;
   protocol: 'http' | 'https' | 'socks5';
 }
 
@@ -20,7 +20,7 @@ export interface ProxyResponse {
 
 export interface ProxyUsageRecord {
   proxyAddress: string;
-  tier: ProxyTier;
+  tier?: ProxyTier;
   targetPlaceId: string;
   success: boolean;
   responseTimeMs?: number;
