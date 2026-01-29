@@ -148,13 +148,12 @@ export class GoogleMapsScraper {
       await this.clickReviewsTab(page);
       await this.delay(2000);
 
-      // Wait for reviews to load
+      // Wait for reviews to load - check for scrollable review container
       try {
-        await page.waitForSelector('div[class*="jftiEf"], div[data-review-id]', { timeout: 5000 });
+        await page.waitForSelector('div[class*="m6QErb"], div[data-review-id], div[role="main"]', { timeout: 5000 });
         console.log('[Scraper] Reviews section found');
       } catch {
         console.log('[Scraper] Could not find reviews section - taking screenshot');
-        // Save debug screenshot
         await page.screenshot({ path: `/tmp/debug-${placeId}.png`, fullPage: true });
       }
 
@@ -578,33 +577,26 @@ export class GoogleMapsScraper {
     // Debug: Log available review-like elements
     const debugInfo = await page.evaluate(() => {
       const info: string[] = [];
-      // Check for various review container patterns
-      const patterns = [
-        'div[data-review-id]',
-        'div[class*="jftiEf"]',
-        'div[class*="GHT2ce"]',
-        'div[class*="MyEned"]',
-        'div[class*="WMbnJf"]',
-        'div[class*="jJc9Ad"]',
-      ];
-      for (const p of patterns) {
-        const count = document.querySelectorAll(p).length;
-        if (count > 0) info.push(`${p}: ${count}`);
-      }
-      // Get page HTML length
       info.push(`HTML length: ${document.body.innerHTML.length}`);
-      // Check if there's a reviews section
       const hasReviewsSection = document.querySelector('div[class*="m6QErb"]');
       info.push(`Reviews section: ${hasReviewsSection ? 'yes' : 'no'}`);
+      // Count elements with star aria-labels (review indicators)
+      const starSpans = document.querySelectorAll('span[role="img"][aria-label*="yıldız"]');
+      info.push(`Star spans: ${starSpans.length}`);
+      // Count buttons (potential "Diğer" buttons)
+      const buttons = document.querySelectorAll('button');
+      let digerCount = 0;
+      buttons.forEach(b => { if ((b.textContent || '').includes('Diğer')) digerCount++; });
+      info.push(`Diğer buttons: ${digerCount}`);
       return info;
     });
     console.log('[Scraper] Debug info:', debugInfo.join(', '));
 
     while (reviews.length < maxReviews && scrollAttempts < maxScrollAttempts) {
-      // Expand all "More" buttons first
+      // Expand all "Diğer" (More) buttons first
       await this.expandReviews(page);
 
-      // Extract reviews
+      // Extract reviews using structural XPath approach
       const newReviews = await page.evaluate(() => {
         const extracted: Array<{
           authorName: string;
@@ -614,80 +606,89 @@ export class GoogleMapsScraper {
           pricePerPerson?: string;
         }> = [];
 
-        // Find all review containers - multiple selector attempts
-        const reviewSelectors = [
-          'div[data-review-id]',
-          'div[class*="jftiEf"]',
-          'div[class*="GHT2ce"]',
-          'div[class*="MyEned"]',
-          'div[class*="WMbnJf"]',
-          'div[class*="jJc9Ad"]',
-        ];
+        // Strategy: Find all star rating spans (each review has one), then navigate
+        // up to the review container and extract sibling data.
+        // Star rating XPath pattern: .../div[4]/div[1]/span[1] relative to review root
+        // Author XPath pattern: .../div[2]/div[2]/div[1]/button/div[1] relative to review root
 
-        let reviewElements: NodeListOf<Element> | null = null;
-        for (const selector of reviewSelectors) {
-          const elements = document.querySelectorAll(selector);
-          if (elements.length > 0) {
-            reviewElements = elements;
-            break;
-          }
-        }
+        // Find all span elements with star aria-labels
+        const starSpans = document.querySelectorAll('span[role="img"][aria-label*="yıldız"], span[role="img"][aria-label*="star"]');
 
-        if (!reviewElements) return extracted;
-
-        reviewElements.forEach((el) => {
+        starSpans.forEach((starSpan) => {
           try {
-            // Author name - try multiple selectors
-            let authorName = 'Anonim';
-            const authorSelectors = ['div[class*="d4r55"]', 'span[class*="WNxzHc"]', 'a[class*="WNxzHc"]'];
-            for (const sel of authorSelectors) {
-              const authorEl = el.querySelector(sel);
-              if (authorEl?.textContent) {
-                authorName = authorEl.textContent.trim();
-                break;
-              }
-            }
+            // Navigate up to find the review container.
+            // Star is at: reviewRoot > div > div[4] > div[1] > span[1]
+            // So we go up: span -> div[1] -> div[4] -> div (inner wrapper) -> div (review root)
+            const div1 = starSpan.parentElement; // div[1] (contains star + date)
+            if (!div1) return;
+            const div4 = div1.parentElement; // div[4] (contains rating row + text)
+            if (!div4) return;
+            const innerWrapper = div4.parentElement; // inner div wrapper
+            if (!innerWrapper) return;
+            const reviewRoot = innerWrapper.parentElement; // review root div
+            if (!reviewRoot) return;
 
-            // Rating - find star rating
+            // Verify this is actually a review (not a place rating)
+            // Review roots typically have specific depth of nested divs
+            // and contain both author info and review text
+            const allDivChildren = innerWrapper.children;
+            if (allDivChildren.length < 2) return;
+
+            // Extract rating from star span aria-label
             let rating = 0;
-            const ratingEl = el.querySelector('span[role="img"][aria-label]');
-            if (ratingEl) {
-              const label = ratingEl.getAttribute('aria-label') || '';
-              const match = label.match(/(\d)/);
-              if (match) rating = parseInt(match[1]);
+            const label = starSpan.getAttribute('aria-label') || '';
+            const ratingMatch = label.match(/([\d,\.]+)\s*(yıldız|star)/i);
+            if (ratingMatch) {
+              rating = parseInt(ratingMatch[1].replace(',', '.'));
             }
 
-            // Review text - try multiple selectors
+            // Extract author name
+            // Pattern: innerWrapper > div[2] (author section) > div[2] > div[1] > button > div[1]
+            let authorName = 'Anonim';
+            const authorSection = innerWrapper.querySelector('button div');
+            if (authorSection?.textContent) {
+              const name = authorSection.textContent.trim();
+              if (name.length > 0 && name.length < 100) {
+                authorName = name;
+              }
+            }
+
+            // Extract review text
+            // Pattern: div4 > div[2] (text container)
             let text = '';
-            const textSelectors = [
-              'span[class*="wiI7pd"]',
-              'div[class*="MyEned"] span',
-              'span[class*="review-full-text"]',
-            ];
-            for (const sel of textSelectors) {
-              const textEl = el.querySelector(sel);
-              if (textEl?.textContent && textEl.textContent.length > 10) {
-                text = textEl.textContent.trim();
+            // div4 children: div[1]=rating row, div[2]=text
+            for (let i = 0; i < div4.children.length; i++) {
+              const child = div4.children[i] as HTMLElement;
+              // Skip the rating row (contains span with stars)
+              if (child.querySelector('span[role="img"]')) continue;
+              // The text container - get full text content
+              const candidateText = (child.textContent || '').trim();
+              if (candidateText.length > 10) {
+                // Remove "Diğer" button text from end if present
+                text = candidateText.replace(/\s*Diğer\s*$/, '').trim();
                 break;
               }
             }
 
-            // Relative time
+            // Extract relative time (second span in rating row)
+            // Pattern: div[1] > span[2]
             let relativeTime: string | undefined;
-            const timeSelectors = ['span[class*="rsqaWe"]', 'span[class*="xRkPPb"]'];
-            for (const sel of timeSelectors) {
-              const timeEl = el.querySelector(sel);
-              if (timeEl?.textContent) {
-                relativeTime = timeEl.textContent.trim();
+            const spans = div1.querySelectorAll('span');
+            for (const span of spans) {
+              const spanText = (span.textContent || '').trim();
+              // Time patterns: "2 ay önce", "3 hafta önce", "1 yıl önce"
+              if (spanText.match(/(önce|ago|gün|hafta|ay|yıl|week|month|year|day)/i)) {
+                relativeTime = spanText;
                 break;
               }
             }
 
-            // Price per person (if available)
+            // Extract price per person if present
             let pricePerPerson: string | undefined;
-            const priceEl = el.querySelector('span[class*="RfDO5c"]');
-            if (priceEl?.textContent) {
-              pricePerPerson = priceEl.textContent.trim();
+            const allText = reviewRoot.textContent || '';
+            const priceMatch = allText.match(/kişi başı[:\s]*([\d.,]+\s*₺)/i);
+            if (priceMatch) {
+              pricePerPerson = priceMatch[1];
             }
 
             if (text && text.length > 10) {
@@ -768,15 +769,26 @@ export class GoogleMapsScraper {
    */
   private async expandReviews(page: Page): Promise<void> {
     try {
-      await page.evaluate(() => {
-        const buttons = document.querySelectorAll('button[aria-label*="Daha fazla"], button[aria-expanded="false"], button[class*="w8nwRe"]');
-        buttons.forEach((btn) => {
+      const expandedCount = await page.evaluate(() => {
+        let count = 0;
+        // "Diğer" buttons inside review text containers
+        // These are <button> or <span> elements with text "Diğer"
+        const allButtons = document.querySelectorAll('button, span');
+        allButtons.forEach((el) => {
           try {
-            (btn as HTMLElement).click();
+            const text = (el.textContent || '').trim();
+            if (text === 'Diğer' || text === 'More') {
+              (el as HTMLElement).click();
+              count++;
+            }
           } catch {}
         });
+        return count;
       });
-      await this.delay(300);
+      if (expandedCount > 0) {
+        console.log(`[Scraper] Expanded ${expandedCount} "Diğer" buttons`);
+        await this.delay(500);
+      }
     } catch {
       // Ignore
     }
