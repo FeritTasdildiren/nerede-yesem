@@ -670,109 +670,127 @@ export class GoogleMapsScraper {
                           document.querySelector('div[class*="m6QErb"]');
         if (!container) return extracted;
 
-        // Iterate over container's direct children to find review cards
-        const children = container.children;
-        for (let idx = 0; idx < children.length; idx++) {
+        // Strategy: Find all star containers (span with 5 child spans) inside container,
+        // then walk UP from each to find the review card and extract data.
+        // This avoids rigid top-down traversal that breaks with varying nesting depths.
+        const starContainers: Element[] = [];
+        container.querySelectorAll('span').forEach(span => {
+          if (span.children.length === 5 &&
+              Array.from(span.children).every(c => c.tagName === 'SPAN')) {
+            starContainers.push(span);
+          }
+        });
+
+        for (const starContainer of starContainers) {
           try {
-            const reviewCard = children[idx] as HTMLElement;
+            // Walk up from star to find the review card (direct child of container)
+            let reviewCard: HTMLElement | null = null;
+            let current: HTMLElement | null = starContainer as HTMLElement;
+            for (let d = 0; d < 15 && current; d++) {
+              if (current.parentElement === container) {
+                reviewCard = current;
+                break;
+              }
+              current = current.parentElement;
+            }
+            if (!reviewCard) continue;
 
-            // Drill into review structure: reviewCard > div > div = innerWrapper
-            const level1 = reviewCard.querySelector(':scope > div');
-            if (!level1) continue;
-            const innerWrapper = level1.querySelector(':scope > div');
-            if (!innerWrapper || innerWrapper.children.length < 3) continue;
+            // --- Rating ---
+            let rating = 0;
+            // Method 1: aria-label on star container or its parent
+            const starLabel = starContainer.getAttribute('aria-label') ||
+                              starContainer.parentElement?.getAttribute('aria-label') || '';
+            const ratingMatch = starLabel.match(/([\d,\.]+)\s*(yıldız|star)/i);
+            if (ratingMatch) {
+              rating = parseFloat(ratingMatch[1].replace(',', '.'));
+            }
+            // Method 2: count filled stars (class elGi1d = filled, gnOR4e = empty)
+            if (rating === 0) {
+              const filledStars = starContainer.querySelectorAll('.elGi1d');
+              if (filledStars.length > 0) rating = filledStars.length;
+            }
 
-            // Find the star rating: a span with exactly 5 child spans
-            // Located at: innerWrapper > div[4] > div[1] > span[1]
-            let starContainer: Element | null = null;
-            let ratingSection: Element | null = null;
-            let ratingRow: Element | null = null;
+            // --- Author name ---
+            let authorName = 'Anonim';
+            const authorBtn = reviewCard.querySelector('button div');
+            if (authorBtn?.textContent) {
+              const name = authorBtn.textContent.trim();
+              if (name.length > 0 && name.length < 100) authorName = name;
+            }
 
-            for (const section of Array.from(innerWrapper.children)) {
-              const firstChildDiv = section.querySelector(':scope > div');
-              if (!firstChildDiv) continue;
-              const candidateSpan = firstChildDiv.querySelector(':scope > span');
-              if (candidateSpan && candidateSpan.children.length === 5) {
-                const allSpans = Array.from(candidateSpan.children).every(c => c.tagName === 'SPAN');
-                if (allSpans) {
-                  starContainer = candidateSpan;
-                  ratingSection = section as Element;
-                  ratingRow = firstChildDiv;
+            // --- Review text ---
+            // Find the longest text block in the review that isn't author/rating/time
+            let text = '';
+            // Walk up from star to its "section" ancestor (grandparent or great-grandparent)
+            // Then look at siblings for text content
+            const starParent1 = starContainer.parentElement; // span(2ch) or div
+            const starParent2 = starParent1?.parentElement;  // div (rating row)
+            const ratingSection = starParent2?.parentElement; // div (section containing rating + text)
+
+            if (ratingSection) {
+              // Look at ratingSection's children for text (skip the one containing stars)
+              for (const child of Array.from(ratingSection.children)) {
+                if (child.contains(starContainer)) continue;
+                const candidateText = (child.textContent || '').trim();
+                if (candidateText.length > 10) {
+                  text = candidateText.replace(/\s*Diğer\s*$/, '').trim();
                   break;
                 }
               }
             }
 
-            if (!starContainer || !ratingSection) continue; // Not a review card
-
-            // Extract rating from star container aria-label
-            let rating = 0;
-            const label = starContainer.getAttribute('aria-label') || '';
-            const ratingMatch = label.match(/([\d,\.]+)\s*(yıldız|star)/i);
-            if (ratingMatch) {
-              rating = parseFloat(ratingMatch[1].replace(',', '.'));
-            }
-            // Fallback: count filled stars by CSS class
-            // Filled star has class "elGi1d", empty star has class "gnOR4e"
-            if (rating === 0) {
-              const filledStars = starContainer.querySelectorAll('.elGi1d');
-              if (filledStars.length > 0) {
-                rating = filledStars.length;
+            // Fallback: search all text-containing elements in review card
+            if (!text) {
+              const allEls = reviewCard.querySelectorAll('div, span');
+              let longestText = '';
+              for (const el of allEls) {
+                // Skip elements that contain child divs (not leaf text)
+                if (el.tagName === 'DIV' && el.querySelector(':scope > div')) continue;
+                // Skip star-related and author elements
+                if (starContainer.contains(el) || el.contains(starContainer)) continue;
+                const t = (el.textContent || '').trim();
+                if (t.length > longestText.length && t.length > 10 && t !== authorName) {
+                  longestText = t;
+                }
               }
-            }
-            // Fallback: check parent elements for rating info
-            if (rating === 0) {
-              const parentLabel = (ratingRow?.getAttribute('aria-label') || '') +
-                                  (ratingSection.getAttribute('aria-label') || '');
-              const parentMatch = parentLabel.match(/([\d,\.]+)/);
-              if (parentMatch) {
-                rating = parseFloat(parentMatch[1].replace(',', '.'));
+              if (longestText.length > 10) {
+                text = longestText.replace(/\s*Diğer\s*$/, '').trim();
               }
             }
 
-            // Extract author name
-            let authorName = 'Anonim';
-            const authorButton = innerWrapper.querySelector('button div');
-            if (authorButton?.textContent) {
-              const name = authorButton.textContent.trim();
-              if (name.length > 0 && name.length < 100) {
-                authorName = name;
-              }
-            }
-
-            // Extract review text from ratingSection's children (skip the rating row)
-            let text = '';
-            for (let i = 0; i < ratingSection.children.length; i++) {
-              const child = ratingSection.children[i] as HTMLElement;
-              if (child === ratingRow) continue;
-              const candidateText = (child.textContent || '').trim();
-              if (candidateText.length > 10) {
-                text = candidateText.replace(/\s*Diğer\s*$/, '').trim();
-                break;
-              }
-            }
-
-            // Extract relative time from rating row spans
+            // --- Relative time ---
             let relativeTime: string | undefined;
-            if (ratingRow) {
-              const spans = ratingRow.querySelectorAll('span');
+            // Time is usually a sibling span of the star container's parent
+            const timeSearch = starParent2 || starParent1;
+            if (timeSearch) {
+              const spans = timeSearch.querySelectorAll('span');
               for (const span of spans) {
                 if (span === starContainer || starContainer.contains(span)) continue;
                 const spanText = (span.textContent || '').trim();
-                if (spanText.match(/(önce|ago|gün|hafta|ay|yıl|week|month|year|day)/i)) {
+                if (spanText.length < 50 && spanText.match(/(önce|ago|gün|hafta|ay|yıl|week|month|year|day)/i)) {
+                  relativeTime = spanText;
+                  break;
+                }
+              }
+            }
+            // Fallback: search entire review card
+            if (!relativeTime) {
+              const allSpans = reviewCard.querySelectorAll('span');
+              for (const span of allSpans) {
+                if (starContainer.contains(span)) continue;
+                const spanText = (span.textContent || '').trim();
+                if (spanText.length < 50 && spanText.match(/(önce|ago|gün|hafta|ay|yıl|week|month|year|day)/i)) {
                   relativeTime = spanText;
                   break;
                 }
               }
             }
 
-            // Extract price per person if present
+            // --- Price per person ---
             let pricePerPerson: string | undefined;
             const allText = reviewCard.textContent || '';
             const priceMatch = allText.match(/kişi başı[:\s]*([\d.,]+\s*₺)/i);
-            if (priceMatch) {
-              pricePerPerson = priceMatch[1];
-            }
+            if (priceMatch) pricePerPerson = priceMatch[1];
 
             if (text && text.length > 10) {
               extracted.push({
