@@ -753,61 +753,66 @@ export class GoogleMapsScraper {
             }
 
             // --- Review text ---
-            // Find the longest text block in the review that isn't author/rating/time
             let text = '';
-            // Walk up from star to its "section" ancestor (grandparent or great-grandparent)
-            // Then look at siblings for text content
-            const starParent1 = starContainer.parentElement; // span(2ch) or div
-            const starParent2 = starParent1?.parentElement;  // div (rating row)
-            const ratingSection = starParent2?.parentElement; // div (section containing rating + text)
 
-            if (ratingSection) {
-              // Look at ratingSection's children for text (skip the one containing stars)
-              for (const child of Array.from(ratingSection.children)) {
-                if (child.contains(starContainer)) continue;
-                const candidateText = (child.textContent || '').trim();
-                if (candidateText.length > 10) {
-                  text = candidateText.replace(/\s*Diğer\s*$/, '').trim();
-                  break;
+            // Method 1: Known Google Maps review text class
+            const knownTextEl = reviewCard.querySelector('span.wiI7pd');
+            if (knownTextEl) {
+              text = (knownTextEl.textContent || '').trim();
+            }
+
+            // Method 2: Find longest span NOT inside button/a and NOT a profile description
+            if (!text) {
+              const allSpans = reviewCard.querySelectorAll('span');
+              let longestReviewText = '';
+              for (const span of allSpans) {
+                // Skip star container and its children
+                if (starContainer.contains(span) || span.contains(starContainer)) continue;
+                // Skip elements inside buttons or links (author section)
+                if (span.closest('button') || span.closest('a')) continue;
+                const t = (span.textContent || '').trim();
+                // Skip short texts
+                if (t.length <= 15) continue;
+                // Skip profile descriptions (e.g., "Yerel Rehber · 72 yorum · 9 fotoğraf")
+                if (t.match(/\d+\s*(yorum|review)/i) && t.match(/(fotoğraf|photo|Rehber|Guide)/i)) continue;
+                // Skip time indicators
+                if (t.match(/^\d+\s*(gün|hafta|ay|yıl|day|week|month|year)\s*(önce|ago)/i)) continue;
+                if (t.length > longestReviewText.length) {
+                  longestReviewText = t;
                 }
+              }
+              if (longestReviewText.length > 15) {
+                text = longestReviewText.replace(/\s*Diğer\s*$/, '').trim();
               }
             }
 
-            // Fallback: search all text-containing elements in review card
+            // Method 3: Walk up from star to review card level and search siblings
             if (!text) {
-              const allEls = reviewCard.querySelectorAll('div, span');
-              let longestText = '';
-              for (const el of allEls) {
-                // Skip elements that contain child divs (not leaf text)
-                if (el.tagName === 'DIV' && el.querySelector(':scope > div')) continue;
-                // Skip star-related and author elements
-                if (starContainer.contains(el) || el.contains(starContainer)) continue;
-                const t = (el.textContent || '').trim();
-                if (t.length > longestText.length && t.length > 10 && t !== authorName) {
-                  longestText = t;
-                }
+              // Find the section that contains the star rating (walk up until we're 1-2 levels below reviewCard)
+              let section: HTMLElement | null = starContainer as HTMLElement;
+              while (section && section.parentElement !== reviewCard && section.parentElement?.parentElement !== reviewCard) {
+                section = section.parentElement;
               }
-              if (longestText.length > 10) {
-                text = longestText.replace(/\s*Diğer\s*$/, '').trim();
+              if (section) {
+                const parent = section.parentElement;
+                if (parent) {
+                  for (const sibling of Array.from(parent.children)) {
+                    if (sibling.contains(starContainer)) continue;
+                    // Skip elements inside buttons (author)
+                    if (sibling.querySelector('button') || sibling.closest('button')) continue;
+                    const candidateText = (sibling.textContent || '').trim();
+                    if (candidateText.length > 15 && !candidateText.match(/\d+\s*(yorum|review)/i)) {
+                      text = candidateText.replace(/\s*Diğer\s*$/, '').trim();
+                      break;
+                    }
+                  }
+                }
               }
             }
 
             // --- Relative time ---
             let relativeTime: string | undefined;
-            // Time is usually a sibling span of the star container's parent
-            const timeSearch = starParent2 || starParent1;
-            if (timeSearch) {
-              const spans = timeSearch.querySelectorAll('span');
-              for (const span of spans) {
-                if (span === starContainer || starContainer.contains(span)) continue;
-                const spanText = (span.textContent || '').trim();
-                if (spanText.length < 50 && spanText.match(/(önce|ago|gün|hafta|ay|yıl|week|month|year|day)/i)) {
-                  relativeTime = spanText;
-                  break;
-                }
-              }
-            }
-            // Fallback: search entire review card
+            // Search entire review card for time
             if (!relativeTime) {
               const allSpans = reviewCard.querySelectorAll('span');
               for (const span of allSpans) {
