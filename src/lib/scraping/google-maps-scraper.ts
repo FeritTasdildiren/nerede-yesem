@@ -114,7 +114,7 @@ export class GoogleMapsScraper {
     let browser: Browser | null = null;
 
     try {
-      proxy = await proxyService.getProxy(placeId);
+      proxy = await proxyService.getProxy(placeId, 'medium');
       browser = await this.initBrowser(proxy || undefined);
       const page = await this.createPage(browser, proxy || undefined);
 

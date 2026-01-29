@@ -149,7 +149,7 @@ class GoogleMapsSearchScraper {
     let proxy: Proxy | null = null;
 
     try {
-      proxy = await proxyService.getProxy('search-scrape');
+      proxy = await proxyService.getProxy('search-scrape', 'medium');
       browser = await this.initBrowser(proxy || undefined);
       const page = await this.createPage(browser, proxy || undefined);
 
