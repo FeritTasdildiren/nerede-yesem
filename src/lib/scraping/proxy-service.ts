@@ -3,17 +3,16 @@ import { prisma } from '@/lib/db';
 import { env } from '@/lib/config/env';
 import { Proxy, ProxyTier, ProxyUsageRecord } from '@/types/scraping';
 
+// Response from GET /api/v1/random/{tier}
 interface ProxyApiResponse {
-  success: boolean;
-  proxy?: {
-    address: string;
-    port: number;
-    username?: string;
-    password?: string;
-    tier: string;
-    protocol: string;
-  };
-  error?: string;
+  ip: string;
+  port: number;
+  protocol: string | null;
+  country: string | null;
+  anonymity: string | null;
+  quality_score: number;
+  success_rate: number;
+  avg_response_time: number;
 }
 
 export class ProxyService {
@@ -54,37 +53,44 @@ export class ProxyService {
       // Get previously used proxies for this place
       const usedForPlace = this.usedProxies.get(placeId) || new Set();
 
-      const response = await fetch(`${this.apiUrl}/proxy/get`, {
-        method: 'POST',
+      // GET /api/v1/random/{tier} - returns a single random proxy
+      const response = await fetch(`${this.apiUrl}/api/v1/random/${tier}`, {
+        method: 'GET',
         headers: {
-          'Content-Type': 'application/json',
           'X-API-Key': this.apiKey,
         },
-        body: JSON.stringify({
-          tier,
-          exclude: Array.from(usedForPlace),
-        }),
       });
 
       if (!response.ok) {
-        console.error(`[ProxyService] API error: ${response.status}`);
+        if (response.status === 404) {
+          console.warn(`[ProxyService] No ${tier} proxy found`);
+        } else {
+          console.error(`[ProxyService] API error: ${response.status}`);
+        }
         return null;
       }
 
       const data: ProxyApiResponse = await response.json();
 
-      if (!data.success || !data.proxy) {
-        console.warn(`[ProxyService] No ${tier} proxy available`);
+      if (!data.ip || !data.port) {
+        console.warn(`[ProxyService] Invalid proxy response for ${tier}`);
         return null;
       }
 
+      // Skip if this proxy was already used for this place
+      if (usedForPlace.has(data.ip)) {
+        console.log(`[ProxyService] Proxy ${data.ip} already used for ${placeId}, retrying...`);
+        // One retry with same tier
+        return this.fetchProxyRetry(tier, placeId, usedForPlace);
+      }
+
       const proxy: Proxy = {
-        address: data.proxy.address,
-        port: data.proxy.port,
-        username: data.proxy.username,
-        password: data.proxy.password,
-        tier: data.proxy.tier as ProxyTier,
-        protocol: data.proxy.protocol as 'http' | 'https' | 'socks5',
+        address: data.ip,
+        port: data.port,
+        username: undefined,
+        password: undefined,
+        tier: tier,
+        protocol: (data.protocol as 'http' | 'https' | 'socks5') || 'http',
       };
 
       // Track this proxy as used for this place
@@ -93,9 +99,44 @@ export class ProxyService {
       }
       this.usedProxies.get(placeId)!.add(proxy.address);
 
+      console.log(`[ProxyService] Got ${tier} proxy: ${data.ip}:${data.port} (score: ${data.quality_score}, rate: ${data.success_rate})`);
       return proxy;
     } catch (error) {
       console.error('[ProxyService] Failed to fetch proxy:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Retry fetching a proxy if the first one was already used
+   */
+  private async fetchProxyRetry(tier: ProxyTier, placeId: string, usedForPlace: Set<string>): Promise<Proxy | null> {
+    try {
+      const response = await fetch(`${this.apiUrl}/api/v1/random/${tier}`, {
+        method: 'GET',
+        headers: {
+          'X-API-Key': this.apiKey,
+        },
+      });
+
+      if (!response.ok) return null;
+
+      const data: ProxyApiResponse = await response.json();
+      if (!data.ip || !data.port || usedForPlace.has(data.ip)) return null;
+
+      const proxy: Proxy = {
+        address: data.ip,
+        port: data.port,
+        username: undefined,
+        password: undefined,
+        tier: tier,
+        protocol: (data.protocol as 'http' | 'https' | 'socks5') || 'http',
+      };
+
+      this.usedProxies.get(placeId)!.add(proxy.address);
+      console.log(`[ProxyService] Got ${tier} proxy (retry): ${data.ip}:${data.port}`);
+      return proxy;
+    } catch {
       return null;
     }
   }
