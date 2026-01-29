@@ -321,58 +321,36 @@ export class GoogleMapsScraper {
     try {
       console.log('[Scraper] Looking for Yorumlar tab...');
 
-      // Method 1: Try XPath for Yorumlar tab (user-provided)
-      const yorumlarXPath = '/html/body/div[1]/div[2]/div[9]/div[8]/div/div/div[1]/div[2]/div/div[1]/div/div/div[3]/div/div[1]/button[3]';
-
-      let clickedTab = await page.evaluate((xpath) => {
-        const result = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-        const element = result.singleNodeValue as HTMLElement | null;
-        if (element) {
-          element.click();
-          return 'yorumlar-xpath';
+      // Method 1: Text-based button search (most reliable - works regardless of tab order)
+      let clickedTab = await page.evaluate(() => {
+        const buttons = document.querySelectorAll('button[role="tab"], button');
+        for (const btn of buttons) {
+          const text = (btn.textContent || '').toLowerCase().trim();
+          if (text === 'yorumlar' || text === 'reviews' ||
+              /^\d[\d.,]*\s*yorum/i.test(text) ||
+              /yorumlar$/i.test(text)) {
+            (btn as HTMLElement).click();
+            return `text-match: "${text}"`;
+          }
         }
         return null;
-      }, yorumlarXPath);
+      });
 
       if (clickedTab) {
-        console.log(`[Scraper] Clicked Yorumlar tab via XPath`);
+        console.log(`[Scraper] Clicked Yorumlar tab via ${clickedTab}`);
         await this.delay(3000);
       }
 
-      // Method 2: Try CSS selector for tab buttons
-      if (!clickedTab) {
-        clickedTab = await page.evaluate(() => {
-          // Look for tab buttons with "Yorumlar" text
-          const buttons = document.querySelectorAll('button[role="tab"], button');
-          for (const btn of buttons) {
-            const text = (btn.textContent || '').toLowerCase().trim();
-            // Match "Yorumlar" or buttons containing review count like "1.234 yorum"
-            if (text === 'yorumlar' || text === 'reviews' ||
-                /^\d[\d.,]*\s*yorum/i.test(text) ||
-                /yorumlar$/i.test(text)) {
-              (btn as HTMLElement).click();
-              return 'yorumlar-button';
-            }
-          }
-          return null;
-        });
-
-        if (clickedTab) {
-          console.log(`[Scraper] Clicked Yorumlar button: ${clickedTab}`);
-          await this.delay(3000);
-        }
-      }
-
-      // Method 3: Fallback - click on review count text
+      // Method 2: Click on review count text (e.g., "1.234 yorum")
       if (!clickedTab) {
         clickedTab = await page.evaluate(() => {
           const spans = document.querySelectorAll('span, div');
           for (const el of spans) {
             const text = (el.textContent || '').trim();
             if (/^\d[\d.,]*\s*(yorum|review)/i.test(text)) {
-              const parent = el.closest('button, a, [role="button"]') || el;
-              (parent as HTMLElement).click();
-              return 'review-count';
+              const clickable = el.closest('button, a, [role="button"]') || el;
+              (clickable as HTMLElement).click();
+              return `review-count: "${text}"`;
             }
           }
           return null;
@@ -384,38 +362,67 @@ export class GoogleMapsScraper {
         }
       }
 
-      // Wait for reviews section to load
-      await this.delay(2000);
-
-      // Check if we're now in the reviews section with search input
-      const hasSearchInput = await page.evaluate(() => {
-        const inputs = document.querySelectorAll('input');
-        for (const input of inputs) {
-          const placeholder = (input.placeholder || '').toLowerCase();
-          const label = (input.getAttribute('aria-label') || '').toLowerCase();
-          if (placeholder.includes('ara') || placeholder.includes('search') ||
-              label.includes('ara') || label.includes('search') ||
-              label.includes('yorum')) {
-            console.log('Found search input:', placeholder, label);
-            return true;
+      // Method 3: XPath fallback (try multiple button indices since tab order varies)
+      if (!clickedTab) {
+        const xpathBase = '/html/body/div[1]/div[2]/div[9]/div[8]/div/div/div[1]/div[2]/div/div[1]/div/div/div[3]/div/div[1]';
+        for (const btnIdx of [2, 3, 4]) {
+          const xpath = `${xpathBase}/button[${btnIdx}]`;
+          clickedTab = await page.evaluate((xp) => {
+            const result = document.evaluate(xp, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+            const el = result.singleNodeValue as HTMLElement | null;
+            if (el) {
+              const text = (el.textContent || '').toLowerCase();
+              if (text.includes('yorum') || text.includes('review')) {
+                el.click();
+                return `xpath-btn${xp.slice(-1)}: "${text.trim()}"`;
+              }
+            }
+            return null;
+          }, xpath);
+          if (clickedTab) {
+            console.log(`[Scraper] Clicked Yorumlar tab via ${clickedTab}`);
+            await this.delay(3000);
+            break;
           }
         }
-        return false;
-      });
+      }
 
-      if (hasSearchInput) {
-        console.log('[Scraper] Full reviews panel with search input found');
-      } else {
-        console.log('[Scraper] No search input visible yet');
-        // Debug: list all inputs
-        const inputs = await page.evaluate(() => {
-          return Array.from(document.querySelectorAll('input')).map(i => ({
-            placeholder: i.placeholder,
-            ariaLabel: i.getAttribute('aria-label'),
-            type: i.type
-          }));
+      if (!clickedTab) {
+        // Debug: log all tab buttons
+        const tabInfo = await page.evaluate(() => {
+          const buttons = document.querySelectorAll('button[role="tab"], button');
+          return Array.from(buttons).slice(0, 10).map(b => (b.textContent || '').trim().substring(0, 30));
         });
-        console.log(`[Scraper] Available inputs: ${JSON.stringify(inputs.slice(0, 5))}`);
+        console.log(`[Scraper] No Yorumlar tab found. Buttons: ${JSON.stringify(tabInfo)}`);
+        return;
+      }
+
+      // Wait and verify reviews panel loaded (check for multiple star spans)
+      await this.delay(2000);
+      let reviewsLoaded = false;
+      for (let retry = 0; retry < 3; retry++) {
+        const starCount = await page.evaluate(() => {
+          let count = 0;
+          document.querySelectorAll('span').forEach(span => {
+            if (span.children.length === 5 && Array.from(span.children).every(c => c.tagName === 'SPAN')) {
+              count++;
+            }
+          });
+          return count;
+        });
+
+        if (starCount > 1) {
+          console.log(`[Scraper] Reviews panel loaded: ${starCount} star spans found`);
+          reviewsLoaded = true;
+          break;
+        }
+
+        console.log(`[Scraper] Waiting for reviews to load (attempt ${retry + 1}/3, stars: ${starCount})...`);
+        await this.delay(3000);
+      }
+
+      if (!reviewsLoaded) {
+        console.log('[Scraper] Reviews panel may not have fully loaded');
       }
     } catch (error) {
       console.warn('[Scraper] Could not click reviews tab:', error);
