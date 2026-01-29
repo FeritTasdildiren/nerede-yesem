@@ -147,19 +147,62 @@ class GoogleMapsSearchScraper {
   ): Promise<SearchScrapeResult> {
     let browser: Browser | null = null;
     let proxy: Proxy | null = null;
+    const maxProxyAttempts = 10;
+    const proxyTimeout = 10000; // 10sn per proxy attempt
+    const startTime = Date.now();
 
     try {
-      proxy = await proxyService.getProxy('search-scrape', 'medium');
-      browser = await this.initBrowser(proxy || undefined);
-      const page = await this.createPage(browser, proxy || undefined);
-
       const searchUrl = buildSearchUrl(locationText, foodQuery, latitude, longitude, radiusKm);
       console.log(`[SearchScraper] Navigating to: ${searchUrl}`);
 
-      await page.goto(searchUrl, {
-        waitUntil: 'networkidle0',
-        timeout: this.timeout,
-      });
+      // Retry loop: try different proxies until one connects
+      let page: Page | null = null;
+      let lastError: Error | null = null;
+
+      for (let attempt = 1; attempt <= maxProxyAttempts; attempt++) {
+        try {
+          proxy = await proxyService.getProxy('search-scrape', 'high');
+          browser = await this.initBrowser(proxy || undefined);
+          page = await this.createPage(browser, proxy || undefined);
+
+          console.log(`[SearchScraper] Proxy attempt ${attempt}/${maxProxyAttempts}: ${proxy?.address || 'direct'}`);
+
+          await page.goto(searchUrl, {
+            waitUntil: 'networkidle0',
+            timeout: proxyTimeout,
+          });
+
+          // Success - page loaded
+          console.log(`[SearchScraper] Connected via proxy ${proxy?.address} (attempt ${attempt})`);
+          break;
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error));
+          console.warn(`[SearchScraper] Proxy attempt ${attempt} failed (${proxy?.address}): ${lastError.message.substring(0, 80)}`);
+
+          if (proxy) {
+            await proxyService.recordUsage({
+              proxyAddress: proxy.address,
+              tier: proxy.tier,
+              targetPlaceId: 'search-scrape',
+              success: false,
+              responseTimeMs: Date.now() - startTime,
+              errorMessage: lastError.message,
+            });
+          }
+
+          // Close failed browser before retrying
+          if (browser) { await browser.close(); browser = null; }
+          page = null;
+
+          if (attempt === maxProxyAttempts) {
+            throw new Error(`All ${maxProxyAttempts} proxy attempts failed. Last: ${lastError.message}`);
+          }
+        }
+      }
+
+      if (!page || !browser) {
+        throw new Error('No page available after proxy attempts');
+      }
 
       await this.delay(3000);
       await this.acceptCookies(page);
@@ -184,7 +227,7 @@ class GoogleMapsSearchScraper {
           tier: proxy.tier,
           targetPlaceId: 'search-scrape',
           success: true,
-          responseTimeMs: 0,
+          responseTimeMs: Date.now() - startTime,
         });
       }
 
@@ -195,16 +238,6 @@ class GoogleMapsSearchScraper {
       };
     } catch (error) {
       console.error('[SearchScraper] Error:', error);
-
-      if (proxy) {
-        await proxyService.recordUsage({
-          proxyAddress: proxy.address,
-          tier: proxy.tier,
-          targetPlaceId: 'search-scrape',
-          success: false,
-          errorMessage: error instanceof Error ? error.message : 'Unknown error',
-        });
-      }
 
       return {
         success: false,
