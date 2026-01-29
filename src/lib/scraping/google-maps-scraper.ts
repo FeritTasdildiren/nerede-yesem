@@ -626,6 +626,26 @@ export class GoogleMapsScraper {
         if ((el.textContent || '').trim() === 'Diğer' || (el.textContent || '').trim() === 'More') digerCount++;
       });
       info.push(`Diğer buttons: ${digerCount}`);
+      // Trace DOM structure from star span upward to understand nesting
+      if (reviewsContainer && fiveChildSpans > 0) {
+        const allSpans = document.querySelectorAll('span');
+        for (const span of allSpans) {
+          if (span.children.length === 5 && Array.from(span.children).every(c => c.tagName === 'SPAN')) {
+            // Walk up from star span and log each level
+            const p1 = span.parentElement;
+            const p2 = p1?.parentElement;
+            const p3 = p2?.parentElement;
+            const p4 = p3?.parentElement;
+            const p5 = p4?.parentElement;
+            info.push(`Up from star: ${p5?.tagName}(${p5?.children.length}ch) > ${p4?.tagName}(${p4?.children.length}ch) > ${p3?.tagName}(${p3?.children.length}ch) > ${p2?.tagName}(${p2?.children.length}ch) > ${p1?.tagName}(${p1?.children.length}ch) > SPAN(5ch)`);
+            // Check if any of these is a direct child of container
+            const containerChildren = Array.from(reviewsContainer.children);
+            const directChild = [p5, p4, p3, p2, p1].findIndex(p => p ? containerChildren.includes(p) : false);
+            info.push(`Direct child of container at level: p${directChild + 1} (0=p5/card, counted from star)`);
+            break;
+          }
+        }
+      }
       return info;
     });
     console.log('[Scraper] Debug info:', debugInfo.join(', '));
