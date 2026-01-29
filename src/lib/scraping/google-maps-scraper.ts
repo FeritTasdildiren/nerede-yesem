@@ -183,6 +183,33 @@ export class GoogleMapsScraper {
         console.log('[Scraper] Could not find main content');
       }
 
+      // Wait for restaurant detail panel to render (SPA lazy load)
+      // The tab bar (Genel Bakış, Yorumlar, Hakkında) renders after the Maps shell
+      let panelReady = false;
+      for (let wait = 0; wait < 5; wait++) {
+        panelReady = await page.evaluate(() => {
+          // Check for tab bar buttons with restaurant-specific text
+          const tabs = document.querySelectorAll('button[role="tab"]');
+          if (tabs.length > 0) return true;
+          // Check for restaurant name heading (h1 or h2 inside the detail panel)
+          const heading = document.querySelector('h1, h2.fontHeadlineLarge');
+          if (heading && heading.textContent && heading.textContent.trim().length > 2) return true;
+          // Check for rating section (star display)
+          const ratingSection = document.querySelector('div[role="img"][aria-label*="yıldız"], div[role="img"][aria-label*="star"]');
+          if (ratingSection) return true;
+          return false;
+        });
+        if (panelReady) {
+          console.log(`[Scraper] Restaurant detail panel loaded (wait ${wait + 1})`);
+          break;
+        }
+        console.log(`[Scraper] Waiting for restaurant panel to render (${wait + 1}/5)...`);
+        await this.delay(2000);
+      }
+      if (!panelReady) {
+        console.log('[Scraper] Restaurant panel may not have fully rendered');
+      }
+
       // Click reviews tab
       await this.clickReviewsTab(page);
       await this.delay(2000);
