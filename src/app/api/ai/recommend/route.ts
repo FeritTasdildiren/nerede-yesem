@@ -1,15 +1,16 @@
-// AI Recommendation Endpoint with Cache and Scraping Integration
+// AI Recommendation Endpoint with Cache, Discovery, and Scraping Integration
 import { NextRequest, NextResponse } from 'next/server';
 import { analyzeReviews, generateRecommendationMessage } from '@/lib/ai/openai';
-import { searchNearbyRestaurants, getPlaceDetails, getPriceRangeFromLevel, calculateDistance } from '@/lib/google-places';
+import { getPlaceDetails, getPriceRangeFromLevel, calculateDistance } from '@/lib/google-places';
 import { ApiResponse, SearchResult, RestaurantWithAnalysis } from '@/types';
 import { cacheService } from '@/lib/cache/cache-service';
 import { googleMapsScraper } from '@/lib/scraping/google-maps-scraper';
 import { restaurantRepository } from '@/lib/repositories/restaurant-repository';
 import { reviewRepository } from '@/lib/repositories/review-repository';
 import { backgroundJobService } from '@/lib/jobs/background-job-service';
-import { generateCacheKey, CachedAnalysisResult } from '@/types/scraping';
+import { CachedAnalysisResult } from '@/types/scraping';
 import { env } from '@/lib/config/env';
+import { restaurantDiscoveryService, DiscoveredRestaurant } from '@/lib/services/restaurant-discovery';
 
 // Flag to enable/disable database features (set to false if DB not ready)
 const DB_ENABLED = !!env.DATABASE_URL;
@@ -17,7 +18,7 @@ const DB_ENABLED = !!env.DATABASE_URL;
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { foodQuery, location, radius = 3 } = body;
+    const { foodQuery, location, radius = 3, locationText = '' } = body;
 
     if (!foodQuery || !location) {
       return NextResponse.json<ApiResponse<null>>(
@@ -26,7 +27,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.log('[API] Search request:', { foodQuery, location, radius, dbEnabled: DB_ENABLED });
+    console.log('[API] Search request:', { foodQuery, location, radius, locationText, dbEnabled: DB_ENABLED });
 
     // Check cache first (if DB is enabled)
     if (DB_ENABLED) {
@@ -68,20 +69,20 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Cache miss or DB disabled - search Google Places
-    console.log('[API] Cache miss, searching Google Places...');
+    // Cache miss or DB disabled - use Discovery Service (parallel scrape + API)
+    console.log('[API] Cache miss, starting restaurant discovery...');
 
-    const radiusInMeters = radius * 1000;
-    const places = await searchNearbyRestaurants(
-      location.latitude,
-      location.longitude,
+    const discoveryResult = await restaurantDiscoveryService.discover({
       foodQuery,
-      radiusInMeters
-    );
+      locationText: locationText || `${location.latitude},${location.longitude}`,
+      latitude: location.latitude,
+      longitude: location.longitude,
+      radiusKm: radius,
+    }, 5);
 
-    console.log('[API] Found places:', places.length);
+    console.log(`[API] Discovery complete: ${discoveryResult.restaurants.length} restaurants (scrape: ${discoveryResult.scrapeCount}, api: ${discoveryResult.apiCount})`);
 
-    if (places.length === 0) {
+    if (discoveryResult.restaurants.length === 0) {
       return NextResponse.json<ApiResponse<SearchResult>>({
         success: true,
         data: {
@@ -94,44 +95,18 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Filter for quality places
-    const qualityPlaces = places.filter(p =>
-      (p.user_ratings_total || 0) >= 50 && (p.rating || 0) >= 4.0
-    );
-
-    console.log(`[API] Quality filter: ${qualityPlaces.length}/${places.length} places`);
-
-    let topPlaces;
-    if (qualityPlaces.length >= 3) {
-      topPlaces = qualityPlaces.slice(0, 5);
-    } else {
-      console.log('[API] Using relaxed filter');
-      topPlaces = places
-        .filter(p => (p.user_ratings_total || 0) >= 10 && (p.rating || 0) >= 3.5)
-        .slice(0, 5);
-
-      if (topPlaces.length === 0) {
-        topPlaces = places.slice(0, 5);
-      }
-    }
-
-    console.log('[API] Top places:', topPlaces.map(p => `${p.name} (${p.rating})`));
-
-    // Process each restaurant in PARALLEL - Try scraping FIRST to minimize API calls
+    // Process each discovered restaurant - Try scraping reviews FIRST to minimize API calls
     const scrapedRestaurantIds: string[] = [];
 
-    // Phase 1: Try scraping first for all restaurants
     interface ScrapeAttempt {
-      place: typeof topPlaces[0];
+      discovered: DiscoveredRestaurant;
       scrapeResult: Awaited<ReturnType<typeof googleMapsScraper.scrapeAndSave>> | null;
       reviewTexts: string[];
       needsApiCall: boolean;
     }
 
-    const scrapeAttempts: ScrapeAttempt[] = [];
-
-    const tryScrapeFirst = async (place: typeof topPlaces[0]): Promise<ScrapeAttempt> => {
-      console.log(`[API] Trying scrape first for: ${place.name}`);
+    const tryScrapeFirst = async (discovered: DiscoveredRestaurant): Promise<ScrapeAttempt> => {
+      console.log(`[API] Trying scrape first for: ${discovered.name} (source: ${discovered.source})`);
 
       let reviewTexts: string[] = [];
       let scrapeResult: Awaited<ReturnType<typeof googleMapsScraper.scrapeAndSave>> | null = null;
@@ -139,81 +114,94 @@ export async function POST(request: NextRequest) {
 
       if (DB_ENABLED) {
         try {
-          // Check if we have recent reviews in DB
-          const existingRestaurant = await restaurantRepository.findByPlaceId(place.place_id);
+          // Check if we have recent reviews in DB (only if placeId available)
+          if (discovered.placeId) {
+            const existingRestaurant = await restaurantRepository.findByPlaceId(discovered.placeId);
 
-          if (existingRestaurant) {
-            const existingReviews = await reviewRepository.findByRestaurantAndKeyword(
-              existingRestaurant.id,
-              foodQuery,
-              env.MAX_REVIEWS_PER_RESTAURANT
-            );
+            if (existingRestaurant) {
+              const existingReviews = await reviewRepository.findByRestaurantAndKeyword(
+                existingRestaurant.id,
+                foodQuery,
+                env.MAX_REVIEWS_PER_RESTAURANT
+              );
 
-            if (existingReviews.length >= 5) {
-              console.log(`[API] Using ${existingReviews.length} cached reviews for ${place.name}`);
-              reviewTexts = existingReviews.map((r: { text: string }) => r.text);
-              scrapedRestaurantIds.push(existingRestaurant.id);
-              // If we have reviews + restaurant info in DB, no API call needed
-              if (existingRestaurant.formattedAddress) {
-                needsApiCall = false;
+              if (existingReviews.length >= 5) {
+                console.log(`[API] Using ${existingReviews.length} cached reviews for ${discovered.name}`);
+                reviewTexts = existingReviews.map((r: { text: string }) => r.text);
+                scrapedRestaurantIds.push(existingRestaurant.id);
+                if (existingRestaurant.formattedAddress) {
+                  needsApiCall = false;
+                }
               }
             }
           }
 
           // If not enough reviews, try scraping
           if (reviewTexts.length < 5) {
-            console.log(`[API] Scraping reviews for ${place.name}...`);
-            // Build URL from place_id
-            const scrapeUrl = `https://www.google.com/maps/place/?q=place_id:${place.place_id}`;
+            console.log(`[API] Scraping reviews for ${discovered.name}...`);
+
+            // Build scrape URL: use placeId URL or googleMapsUrl from scrape
+            let scrapeUrl: string;
+            let scrapeId: string;
+
+            if (discovered.placeId) {
+              scrapeUrl = `https://www.google.com/maps/place/?q=place_id:${discovered.placeId}`;
+              scrapeId = discovered.placeId;
+            } else if (discovered.googleMapsUrl) {
+              scrapeUrl = discovered.googleMapsUrl;
+              scrapeId = `scrape-${discovered.name.replace(/\s+/g, '-').substring(0, 30)}`;
+            } else {
+              // Cannot scrape without URL or placeId
+              console.log(`[API] No URL or placeId for ${discovered.name}, skipping review scrape`);
+              return { discovered, scrapeResult: null, reviewTexts: [], needsApiCall: !!discovered.placeId };
+            }
 
             scrapeResult = await googleMapsScraper.scrapeAndSave(
               scrapeUrl,
-              place.place_id,
+              scrapeId,
               { foodKeyword: foodQuery },
               {
-                googlePlaceId: place.place_id,
-                name: place.name,
-                // Use location from Nearby Search
-                latitude: place.geometry?.location?.lat,
-                longitude: place.geometry?.location?.lng,
+                googlePlaceId: discovered.placeId || scrapeId,
+                name: discovered.name,
+                latitude: discovered.latitude,
+                longitude: discovered.longitude,
               }
             );
 
             if (scrapeResult.success && scrapeResult.reviews.length >= 5) {
               reviewTexts = scrapeResult.reviews.map(r => r.text);
-              console.log(`[API] Scraped ${reviewTexts.length} reviews for ${place.name}`);
+              console.log(`[API] Scraped ${reviewTexts.length} reviews for ${discovered.name}`);
 
               // Get restaurant ID for cache
-              const savedRestaurant = await restaurantRepository.findByPlaceId(place.place_id);
-              if (savedRestaurant) {
-                scrapedRestaurantIds.push(savedRestaurant.id);
+              if (discovered.placeId) {
+                const savedRestaurant = await restaurantRepository.findByPlaceId(discovered.placeId);
+                if (savedRestaurant) {
+                  scrapedRestaurantIds.push(savedRestaurant.id);
+                }
               }
 
-              // If we have enough reviews, no API call needed
-              // Use Nearby Search data (place.name, place.formatted_address) as fallback
               needsApiCall = false;
-              console.log(`[API] Scraping successful for ${place.name}, skipping Place Details API`);
+              console.log(`[API] Scraping successful for ${discovered.name}, skipping Place Details API`);
             }
           }
         } catch (scrapeError) {
-          console.warn(`[API] Scraping failed for ${place.name}:`, scrapeError);
+          console.warn(`[API] Scraping failed for ${discovered.name}:`, scrapeError);
         }
       }
 
-      return { place, scrapeResult, reviewTexts, needsApiCall };
+      return { discovered, scrapeResult, reviewTexts, needsApiCall };
     };
 
-    // Run all scrape attempts in PARALLEL
-    console.log(`[API] Phase 1: Trying to scrape ${topPlaces.length} restaurants in parallel...`);
-    const allScrapeAttempts = await Promise.all(topPlaces.map(tryScrapeFirst));
+    // Phase 1: Run all scrape attempts in PARALLEL
+    console.log(`[API] Phase 1: Trying to scrape ${discoveryResult.restaurants.length} restaurants in parallel...`);
+    const allScrapeAttempts = await Promise.all(discoveryResult.restaurants.map(tryScrapeFirst));
 
-    // Count successful scrapes
     const successfulScrapes = allScrapeAttempts.filter(a => !a.needsApiCall);
-    console.log(`[API] Phase 1 complete: ${successfulScrapes.length}/${topPlaces.length} restaurants scraped successfully`);
+    console.log(`[API] Phase 1 complete: ${successfulScrapes.length}/${discoveryResult.restaurants.length} restaurants scraped successfully`);
 
     // Phase 2: Process results - call API only for failed scrapes if needed
     const processRestaurant = async (attempt: ScrapeAttempt): Promise<RestaurantWithAnalysis | null> => {
-      const { place, scrapeResult, reviewTexts: scrapeReviewTexts, needsApiCall } = attempt;
+      const { discovered, scrapeResult, reviewTexts: scrapeReviewTexts, needsApiCall } = attempt;
       let reviewTexts = scrapeReviewTexts;
 
       // Calculate keyword rating from scraped reviews
@@ -222,11 +210,11 @@ export async function POST(request: NextRequest) {
         const ratings = scrapeResult.reviews.map(r => r.rating).filter(r => r > 0);
         if (ratings.length > 0) {
           const sum = ratings.reduce((a, b) => a + b, 0);
-          keywordRating = Math.round((sum / ratings.length) * 10) / 10; // 1 decimal
+          keywordRating = Math.round((sum / ratings.length) * 10) / 10;
         }
       }
 
-      // Get restaurant details (from scrape or API)
+      // Get restaurant details (from scrape, discovered data, or API)
       let details: {
         place_id: string;
         name: string;
@@ -242,32 +230,32 @@ export async function POST(request: NextRequest) {
       };
 
       if (!needsApiCall) {
-        // Use scraped data + Nearby Search data as fallback
-        console.log(`[API] Using scraped/nearby data for: ${place.name}`);
+        // Use scraped data + discovered data as fallback
+        console.log(`[API] Using scraped/discovered data for: ${discovered.name}`);
         const sr = scrapeResult?.restaurant;
         details = {
-          place_id: place.place_id,
-          name: sr?.name || place.name,
-          formatted_address: sr?.formattedAddress || place.formatted_address || '',
+          place_id: discovered.placeId || `scrape-${discovered.name}`,
+          name: sr?.name || discovered.name,
+          formatted_address: sr?.formattedAddress || discovered.address || '',
           geometry: {
             location: {
-              lat: sr?.latitude || place.geometry?.location?.lat || 0,
-              lng: sr?.longitude || place.geometry?.location?.lng || 0,
+              lat: sr?.latitude || discovered.latitude || 0,
+              lng: sr?.longitude || discovered.longitude || 0,
             }
           },
-          rating: sr?.rating || place.rating,
-          user_ratings_total: sr?.totalReviews || place.user_ratings_total,
-          price_level: sr?.priceLevel || place.price_level,
+          rating: sr?.rating || discovered.rating,
+          user_ratings_total: sr?.totalReviews || discovered.reviewCount,
+          price_level: sr?.priceLevel || discovered.priceLevel,
           formatted_phone_number: sr?.phone,
           website: sr?.website,
-          url: sr?.googleMapsUrl,
+          url: sr?.googleMapsUrl || discovered.googleMapsUrl,
         };
-      } else {
+      } else if (discovered.placeId) {
         // Need to call Place Details API
-        console.log(`[API] Calling Place Details API for: ${place.name}`);
-        const apiDetails = await getPlaceDetails(place.place_id);
+        console.log(`[API] Calling Place Details API for: ${discovered.name}`);
+        const apiDetails = await getPlaceDetails(discovered.placeId);
         if (!apiDetails) {
-          console.log(`[API] Failed to get details for: ${place.name}`);
+          console.log(`[API] Failed to get details for: ${discovered.name}`);
           return null;
         }
         details = apiDetails;
@@ -275,8 +263,26 @@ export async function POST(request: NextRequest) {
         // If scraping failed but we need reviews, use API reviews
         if (reviewTexts.length === 0) {
           reviewTexts = details.reviews?.map(r => r.text).filter(Boolean) || [];
-          console.log(`[API] Using ${reviewTexts.length} Google API reviews for ${place.name}`);
+          console.log(`[API] Using ${reviewTexts.length} Google API reviews for ${discovered.name}`);
         }
+      } else {
+        // No placeId and no scrape data - use discovered data directly
+        console.log(`[API] Using discovered data only for: ${discovered.name}`);
+        details = {
+          place_id: `discovered-${discovered.name}`,
+          name: discovered.name,
+          formatted_address: discovered.address || '',
+          geometry: {
+            location: {
+              lat: discovered.latitude || 0,
+              lng: discovered.longitude || 0,
+            }
+          },
+          rating: discovered.rating,
+          user_ratings_total: discovered.reviewCount,
+          price_level: discovered.priceLevel,
+          url: discovered.googleMapsUrl,
+        };
       }
 
       const distance = calculateDistance(
@@ -303,31 +309,30 @@ export async function POST(request: NextRequest) {
       // Parse address
       const addressParts = details.formatted_address.split(',').map(s => s.trim());
       const district = addressParts[1] || '';
-      const city = addressParts[2] || 'İstanbul';
+      const city = addressParts[2] || '';
 
       return {
         id: details.place_id,
-        placeId: details.place_id,
+        placeId: discovered.placeId,
         name: details.name,
         slug: details.name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, ''),
-        cuisineTypes: place.types?.filter(t =>
-          !['restaurant', 'food', 'point_of_interest', 'establishment'].includes(t)
-        ) || [],
+        cuisineTypes: [],
         priceRange: getPriceRangeFromLevel(details.price_level),
         address: details.formatted_address,
-        city: city.replace(/^\d+\s*/, ''),
+        city: city.replace(/^\d+\s*/, '') || '',
         district,
         latitude: details.geometry.location.lat,
         longitude: details.geometry.location.lng,
         phone: details.formatted_phone_number,
         website: details.website,
-        googleMapsUrl: details.url,
+        googleMapsUrl: details.url || discovered.googleMapsUrl,
         avgRating: details.rating || 0,
         reviewCount: details.user_ratings_total || 0,
         distance: Math.round(distance * 10) / 10,
         aiAnalysis: analysis,
-        keywordRating, // Scrape edilen yorumların yıldız ortalaması
-        searchQuery: foodQuery, // Aranan yemek türü
+        keywordRating,
+        searchQuery: foodQuery,
+        source: discovered.source,
       };
     };
 
@@ -345,7 +350,7 @@ export async function POST(request: NextRequest) {
     // Fallback to AI food score if keyword rating is not available
     const sortedRestaurants = analyzedRestaurants
       .sort((a, b) => {
-        const ratingA = a.keywordRating ?? (a.aiAnalysis.foodScore / 2); // AI score 0-10, rating 0-5
+        const ratingA = a.keywordRating ?? (a.aiAnalysis.foodScore / 2);
         const ratingB = b.keywordRating ?? (b.aiAnalysis.foodScore / 2);
         return ratingB - ratingA;
       });
@@ -412,6 +417,11 @@ export async function POST(request: NextRequest) {
       meta: {
         cached: false,
         reviewSource: DB_ENABLED ? 'scraped' : 'google_api',
+        discoveryStats: {
+          scrapeCount: discoveryResult.scrapeCount,
+          apiCount: discoveryResult.apiCount,
+          apiCallUsed: discoveryResult.apiCallUsed,
+        },
       } as Record<string, unknown>,
     });
   } catch (error) {

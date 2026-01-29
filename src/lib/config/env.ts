@@ -26,6 +26,10 @@ export const env = {
   SCRAPE_TIMEOUT_MS: parseInt(process.env.SCRAPE_TIMEOUT_MS || '30000', 10),
   SCRAPE_MAX_RETRIES: parseInt(process.env.SCRAPE_MAX_RETRIES || '3', 10),
 
+  // Discovery Settings
+  GOOGLE_API_MONTHLY_LIMIT: parseInt(process.env.GOOGLE_API_MONTHLY_LIMIT || '5000', 10),
+  SEARCH_SCRAPE_MAX_RESULTS: parseInt(process.env.SEARCH_SCRAPE_MAX_RESULTS || '50', 10),
+
   // Environment
   NODE_ENV: process.env.NODE_ENV || 'development',
   isDevelopment: process.env.NODE_ENV === 'development',

@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 
 interface SearchFormProps {
-  onSearch: (foodQuery: string, location: { latitude: number; longitude: number }, radius: number) => void;
+  onSearch: (foodQuery: string, location: { latitude: number; longitude: number }, radius: number, locationText: string) => void;
   isLoading: boolean;
 }
 
@@ -156,14 +156,14 @@ export function SearchForm({ onSearch, isLoading }: SearchFormProps) {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (foodQuery.trim() && location) {
-      onSearch(foodQuery.trim(), location, radius);
+      onSearch(foodQuery.trim(), location, radius, locationQuery);
     }
   };
 
   const handleQuickSelect = (food: string) => {
     setFoodQuery(food);
     if (location) {
-      onSearch(food, location, radius);
+      onSearch(food, location, radius, locationQuery);
     }
   };
 

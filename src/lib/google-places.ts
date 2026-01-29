@@ -1,6 +1,6 @@
 // Google Places API Service
 
-interface PlaceResult {
+export interface PlaceResult {
   place_id: string;
   name: string;
   formatted_address: string;
