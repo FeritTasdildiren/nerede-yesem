@@ -17,7 +17,7 @@ export async function analyzeReviews(
   foodQuery: string,
   reviews: string[]
 ): Promise<RestaurantAnalysis> {
-  const prompt = `Sen bir yemek değerlendirme uzmanısın. Aşağıdaki "${restaurantName}" restoranının yorumlarını analiz et ve SADECE "${foodQuery}" hakkındaki değerlendirmeleri çıkar.
+  const prompt = `Sen bir yemek değerlendirme uzmanısın. Aşağıdaki "${restaurantName}" restoranının yorumlarını analiz et ve "${foodQuery}" hakkındaki değerlendirmeleri çıkar.
 
 Yorumlar:
 ${reviews.map((r, i) => `${i + 1}. ${r}`).join('\n')}
@@ -31,7 +31,10 @@ SADECE JSON formatında yanıt ver:
   "summary": "2 cümlelik özet"
 }
 
-Eğer yorumlarda "${foodQuery}" hakkında yeterli bilgi yoksa, foodScore: 0 ve summary'de bunu belirt.`;
+ÖNEMLİ KURALLAR:
+- Yorumlarda "${foodQuery}" doğrudan veya dolaylı olarak geçiyorsa, genel izlenime göre 1-10 arası bir puan VER. Detaylı değerlendirme olmasa bile yorumların genel tonundan puan çıkar.
+- Yorumcular genel olarak memnunsa ve "${foodQuery}" bahsediliyorsa, en az 5 puan ver.
+- foodScore: 0 SADECE yorumların hiçbirinde "${foodQuery}" ile ilgili en ufak bir bilgi yoksa kullan.`;
 
   try {
     const response = await openai.chat.completions.create({
