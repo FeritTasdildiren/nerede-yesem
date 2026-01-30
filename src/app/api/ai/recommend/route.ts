@@ -147,8 +147,11 @@ export async function POST(request: NextRequest) {
             if (discovered.placeId) {
               scrapeUrl = `https://www.google.com/maps/place/?q=place_id:${discovered.placeId}`;
               scrapeId = discovered.placeId;
-            } else if (discovered.googleMapsUrl) {
-              scrapeUrl = discovered.googleMapsUrl;
+            } else if (discovered.latitude && discovered.longitude) {
+              // No placeId: build a search URL with name + coordinates
+              // This navigates Google Maps to the specific restaurant
+              const encodedName = encodeURIComponent(discovered.name);
+              scrapeUrl = `https://www.google.com/maps/search/${encodedName}/@${discovered.latitude},${discovered.longitude},17z`;
               scrapeId = `scrape-${discovered.name.replace(/\s+/g, '-').substring(0, 30)}`;
             } else {
               // Cannot scrape without URL or placeId
