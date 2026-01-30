@@ -853,6 +853,14 @@ export class GoogleMapsScraper {
         return extracted;
       });
 
+      // Debug: log extraction results
+      if (newReviews.length > 0) {
+        const snippet = newReviews[0].text.substring(0, 80);
+        console.log(`[Scraper] Extracted ${newReviews.length} reviews, first: "${snippet}..."`);
+      } else {
+        console.log(`[Scraper] Extracted 0 reviews from evaluate`);
+      }
+
       // Add unique reviews
       for (const review of newReviews) {
         const isDuplicate = reviews.some(
@@ -916,10 +924,15 @@ export class GoogleMapsScraper {
     try {
       const expandedCount = await page.evaluate(() => {
         let count = 0;
-        // "Diğer" buttons inside review text containers
-        // These are <button> or <span> elements with text "Diğer"
-        const allButtons = document.querySelectorAll('button, span');
-        allButtons.forEach((el) => {
+        // Find the reviews container first - only expand buttons INSIDE it
+        const container = document.querySelector('div[class*="m6QErb"][class*="DxyBCb"]') ||
+                          document.querySelector('div[class*="m6QErb"]');
+        if (!container) return count;
+
+        // Only search for "Diğer" buttons inside the review container
+        // This prevents clicking star/rating related buttons that destroy DOM structure
+        const reviewButtons = container.querySelectorAll('button, span');
+        reviewButtons.forEach((el) => {
           try {
             const text = (el.textContent || '').trim();
             if (text === 'Diğer' || text === 'More') {
