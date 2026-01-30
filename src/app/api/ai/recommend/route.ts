@@ -125,7 +125,7 @@ export async function POST(request: NextRequest) {
                 env.MAX_REVIEWS_PER_RESTAURANT
               );
 
-              if (existingReviews.length >= 5) {
+              if (existingReviews.length >= 1) {
                 console.log(`[API] Using ${existingReviews.length} cached reviews for ${discovered.name}`);
                 reviewTexts = existingReviews.map((r: { text: string }) => r.text);
                 scrapedRestaurantIds.push(existingRestaurant.id);
@@ -137,7 +137,7 @@ export async function POST(request: NextRequest) {
           }
 
           // If not enough reviews, try scraping
-          if (reviewTexts.length < 5) {
+          if (reviewTexts.length < 1) {
             console.log(`[API] Scraping reviews for ${discovered.name}...`);
 
             // Build scrape URL: use placeId URL or googleMapsUrl from scrape
@@ -168,7 +168,7 @@ export async function POST(request: NextRequest) {
               }
             );
 
-            if (scrapeResult.success && scrapeResult.reviews.length >= 5) {
+            if (scrapeResult.success && scrapeResult.reviews.length >= 1) {
               reviewTexts = scrapeResult.reviews.map(r => r.text);
               console.log(`[API] Scraped ${reviewTexts.length} reviews for ${discovered.name}`);
 

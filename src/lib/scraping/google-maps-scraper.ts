@@ -761,15 +761,17 @@ export class GoogleMapsScraper {
               text = (knownTextEl.textContent || '').trim();
             }
 
-            // Method 2: Find longest span NOT inside button/a and NOT a profile description
+            // Method 2: Find longest span NOT inside author button and NOT a profile description
             if (!text) {
+              // Find author button to exclude its children
+              const authorButton = reviewCard.querySelector('button');
               const allSpans = reviewCard.querySelectorAll('span');
               let longestReviewText = '';
               for (const span of allSpans) {
                 // Skip star container and its children
                 if (starContainer.contains(span) || span.contains(starContainer)) continue;
-                // Skip elements inside buttons or links (author section)
-                if (span.closest('button') || span.closest('a')) continue;
+                // Skip elements inside the author button only (not all buttons/links)
+                if (authorButton && authorButton.contains(span)) continue;
                 const t = (span.textContent || '').trim();
                 // Skip short texts
                 if (t.length <= 15) continue;
@@ -777,6 +779,8 @@ export class GoogleMapsScraper {
                 if (t.match(/\d+\s*(yorum|review)/i) && t.match(/(fotoğraf|photo|Rehber|Guide)/i)) continue;
                 // Skip time indicators
                 if (t.match(/^\d+\s*(gün|hafta|ay|yıl|day|week|month|year)\s*(önce|ago)/i)) continue;
+                // Skip author name concatenated with profile
+                if (t.startsWith(authorName) && t.match(/(Rehber|yorum|review|Guide)/i)) continue;
                 if (t.length > longestReviewText.length) {
                   longestReviewText = t;
                 }
@@ -786,27 +790,28 @@ export class GoogleMapsScraper {
               }
             }
 
-            // Method 3: Walk up from star to review card level and search siblings
+            // Method 3: Search all divs and spans for longest non-author text
             if (!text) {
-              // Find the section that contains the star rating (walk up until we're 1-2 levels below reviewCard)
-              let section: HTMLElement | null = starContainer as HTMLElement;
-              while (section && section.parentElement !== reviewCard && section.parentElement?.parentElement !== reviewCard) {
-                section = section.parentElement;
-              }
-              if (section) {
-                const parent = section.parentElement;
-                if (parent) {
-                  for (const sibling of Array.from(parent.children)) {
-                    if (sibling.contains(starContainer)) continue;
-                    // Skip elements inside buttons (author)
-                    if (sibling.querySelector('button') || sibling.closest('button')) continue;
-                    const candidateText = (sibling.textContent || '').trim();
-                    if (candidateText.length > 15 && !candidateText.match(/\d+\s*(yorum|review)/i)) {
-                      text = candidateText.replace(/\s*Diğer\s*$/, '').trim();
-                      break;
-                    }
-                  }
+              const authorButton = reviewCard.querySelector('button');
+              const allEls = reviewCard.querySelectorAll('div, span');
+              let longestText = '';
+              for (const el of allEls) {
+                // Skip star-related
+                if (starContainer.contains(el) || el.contains(starContainer)) continue;
+                // Skip author button contents
+                if (authorButton && authorButton.contains(el)) continue;
+                const t = (el.textContent || '').trim();
+                if (t.length <= 15) continue;
+                // Skip profile/time patterns
+                if (t.match(/\d+\s*(yorum|review)/i) && t.match(/(fotoğraf|photo|Rehber|Guide)/i)) continue;
+                if (t.match(/^\d+\s*(gün|hafta|ay|yıl|day|week|month|year)\s*(önce|ago)/i)) continue;
+                if (t.startsWith(authorName) && t.length < 100) continue;
+                if (t.length > longestText.length) {
+                  longestText = t;
                 }
+              }
+              if (longestText.length > 15) {
+                text = longestText.replace(/\s*Diğer\s*$/, '').trim();
               }
             }
 
