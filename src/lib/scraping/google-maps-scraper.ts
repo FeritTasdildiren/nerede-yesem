@@ -784,6 +784,9 @@ export class GoogleMapsScraper {
         if ((el.textContent || '').trim() === 'Diğer' || (el.textContent || '').trim() === 'More') digerCount++;
       });
       info.push(`Diğer buttons: ${digerCount}`);
+      // Count data-review-id elements
+      const dataReviewElements = document.querySelectorAll('[data-review-id]');
+      info.push(`data-review-id elements: ${dataReviewElements.length}`);
       // Trace DOM structure from star span upward to understand nesting
       if (reviewsContainer && fiveChildSpans > 0) {
         const allSpans = document.querySelectorAll('span');
@@ -813,7 +816,6 @@ export class GoogleMapsScraper {
       await this.expandReviews(page, label);
 
       // Extract reviews using structural DOM approach
-      // Based on XPath: .../div[N]/div/div/div[4]/div[1]/span[1] (star container with 5 child spans)
       const newReviews = await page.evaluate(() => {
         const extracted: Array<{
           authorName: string;
@@ -821,6 +823,7 @@ export class GoogleMapsScraper {
           text: string;
           relativeTime?: string;
           pricePerPerson?: string;
+          _debug?: string;
         }> = [];
 
         // Find the reviews scrollable container
@@ -828,20 +831,94 @@ export class GoogleMapsScraper {
                           document.querySelector('div[class*="m6QErb"]');
         if (!container) return extracted;
 
-        // Strategy: Find all star containers (span with 5 child spans) inside container,
-        // then walk UP from each to find the review card and extract data.
-        // This avoids rigid top-down traversal that breaks with varying nesting depths.
-        const starContainers: Element[] = [];
-        container.querySelectorAll('span').forEach(span => {
-          if (span.children.length === 5 &&
-              Array.from(span.children).every(c => c.tagName === 'SPAN')) {
-            starContainers.push(span);
-          }
-        });
+        // Helper: check if element has a star span (5-child pattern)
+        const hasStar = (el: Element): boolean => {
+          return Array.from(el.querySelectorAll('span')).some(
+            s => s.children.length === 5 && Array.from(s.children).every(c => c.tagName === 'SPAN')
+          );
+        };
 
-        for (const starContainer of starContainers) {
-          try {
-            // Walk up from star to find the review card (direct child of container)
+        // Helper: find first star span within element
+        const findStar = (el: Element): Element | null => {
+          for (const span of el.querySelectorAll('span')) {
+            if (span.children.length === 5 && Array.from(span.children).every(c => c.tagName === 'SPAN')) {
+              return span;
+            }
+          }
+          return null;
+        };
+
+        // Helper: count stars within element
+        const countStars = (el: Element): number => {
+          let count = 0;
+          for (const span of el.querySelectorAll('span')) {
+            if (span.children.length === 5 && Array.from(span.children).every(c => c.tagName === 'SPAN')) {
+              count++;
+            }
+          }
+          return count;
+        };
+
+        // Build list of {reviewCard, starContainer} pairs using multiple strategies
+
+        // Strategy A: Use data-review-id attribute (most reliable when available)
+        let reviewPairs: Array<{card: HTMLElement; star: Element}> = [];
+        const dataReviewCards = container.querySelectorAll('[data-review-id]');
+        if (dataReviewCards.length > 0) {
+          for (const card of dataReviewCards) {
+            const star = findStar(card);
+            if (star) {
+              reviewPairs.push({ card: card as HTMLElement, star });
+            }
+          }
+        }
+
+        // Strategy B: Top-down from container children
+        if (reviewPairs.length === 0) {
+          for (const child of container.children) {
+            const childEl = child as HTMLElement;
+            const childStarCount = countStars(childEl);
+
+            if (childStarCount === 0) continue;
+
+            if (childStarCount === 1) {
+              // This child IS an individual review card
+              const star = findStar(childEl);
+              if (star) reviewPairs.push({ card: childEl, star });
+            } else {
+              // This child contains MULTIPLE stars — find individual review level
+              // Recursively look for the level where each element has ≤1 star
+              const findIndividualCards = (el: HTMLElement, depth: number): void => {
+                if (depth > 5) return; // Safety limit
+                for (const sub of el.children) {
+                  const subEl = sub as HTMLElement;
+                  const subStarCount = countStars(subEl);
+                  if (subStarCount === 0) continue;
+                  if (subStarCount === 1) {
+                    const star = findStar(subEl);
+                    if (star) reviewPairs.push({ card: subEl, star });
+                  } else {
+                    findIndividualCards(subEl, depth + 1);
+                  }
+                }
+              };
+              findIndividualCards(childEl, 0);
+            }
+          }
+        }
+
+        // Strategy C: Original star-walking approach (fallback)
+        if (reviewPairs.length === 0) {
+          const starContainers: Element[] = [];
+          container.querySelectorAll('span').forEach(span => {
+            if (span.children.length === 5 &&
+                Array.from(span.children).every(c => c.tagName === 'SPAN')) {
+              starContainers.push(span);
+            }
+          });
+
+          const processedCards = new Set<Element>();
+          for (const starContainer of starContainers) {
             let reviewCard: HTMLElement | null = null;
             let current: HTMLElement | null = starContainer as HTMLElement;
             for (let d = 0; d < 15 && current; d++) {
@@ -851,7 +928,18 @@ export class GoogleMapsScraper {
               }
               current = current.parentElement;
             }
-            if (!reviewCard) continue;
+            if (!reviewCard || processedCards.has(reviewCard)) continue;
+            processedCards.add(reviewCard);
+            reviewPairs.push({ card: reviewCard, star: starContainer });
+          }
+        }
+
+        // Log strategy info
+        const strategy = dataReviewCards.length > 0 ? 'data-review-id' :
+                         reviewPairs.length > 0 ? 'top-down' : 'star-walk';
+
+        for (const { card: reviewCard, star: starContainer } of reviewPairs) {
+          try {
 
             // --- Rating ---
             let rating = 0;
@@ -967,6 +1055,7 @@ export class GoogleMapsScraper {
                 text,
                 relativeTime,
                 pricePerPerson,
+                _debug: strategy,
               });
             }
           } catch {
@@ -980,7 +1069,8 @@ export class GoogleMapsScraper {
       // Debug: log extraction results
       if (newReviews.length > 0) {
         const snippet = newReviews[0].text.substring(0, 80);
-        console.log(`[Scraper:${label}] Extracted ${newReviews.length} reviews, first: "${snippet}..."`);
+        const debugStrategy = newReviews[0]._debug || 'unknown';
+        console.log(`[Scraper:${label}] Extracted ${newReviews.length} reviews (strategy: ${debugStrategy}), first: "${snippet}..."`);
         // Log each review's author + text snippet to detect duplicate text issues
         if (newReviews.length <= 20) {
           for (let ri = 0; ri < newReviews.length; ri++) {
