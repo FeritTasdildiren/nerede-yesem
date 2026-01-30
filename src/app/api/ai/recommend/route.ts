@@ -159,7 +159,7 @@ export async function POST(request: NextRequest) {
             scrapeResult = await googleMapsScraper.scrapeAndSave(
               scrapeUrl,
               scrapeId,
-              { foodKeyword: foodQuery },
+              { foodKeyword: foodQuery, restaurantName: discovered.name },
               {
                 googlePlaceId: discovered.placeId || scrapeId,
                 name: discovered.name,

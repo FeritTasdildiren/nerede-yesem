@@ -65,6 +65,7 @@ export interface ScrapeOptions {
   foodKeyword: string;
   sortBy?: 'newest' | 'highest' | 'lowest';
   timeout?: number;
+  restaurantName?: string; // For debug logging in parallel scraping
 }
 
 // Cache Types

@@ -114,6 +114,7 @@ export class GoogleMapsScraper {
     let browser: Browser | null = null;
     const maxProxyAttempts = 10;
     const proxyTimeout = 10000; // 10sn per proxy attempt
+    const label = options.restaurantName || placeId.substring(0, 15);
 
     try {
       const reviewsUrl = this.buildReviewsUrl(googleMapsUrl, placeId);
@@ -128,7 +129,23 @@ export class GoogleMapsScraper {
           browser = await this.initBrowser(proxy || undefined);
           page = await this.createPage(browser, proxy || undefined);
 
-          console.log(`[Scraper] Proxy attempt ${attempt}/${maxProxyAttempts}: ${proxy?.address || 'direct'} → ${reviewsUrl}`);
+          // Set Google consent cookies BEFORE navigating to bypass consent dialog
+          await page.setCookie(
+            {
+              name: 'CONSENT',
+              value: 'YES+cb.20240101-01-p0.en+FX+111',
+              domain: '.google.com',
+              path: '/',
+            },
+            {
+              name: 'SOCS',
+              value: 'CAISNQgDEitib3FfaWRlbnRpdHlmcm9udGVuZHVpc2VydmVyXzIwMjQwMTE1LjA4X3AxGgJlbiADGgYIgOL_pwY',
+              domain: '.google.com',
+              path: '/',
+            }
+          );
+
+          console.log(`[Scraper:${label}] Proxy attempt ${attempt}/${maxProxyAttempts}: ${proxy?.address || 'direct'}`);
 
           await page.goto(reviewsUrl, {
             waitUntil: 'networkidle0',
@@ -136,11 +153,11 @@ export class GoogleMapsScraper {
           });
 
           // Success - page loaded
-          console.log(`[Scraper] Connected via proxy ${proxy?.address} (attempt ${attempt})`);
+          console.log(`[Scraper:${label}] Connected via proxy ${proxy?.address} (attempt ${attempt})`);
           break;
         } catch (error) {
           lastError = error instanceof Error ? error : new Error(String(error));
-          console.warn(`[Scraper] Proxy attempt ${attempt} failed (${proxy?.address}): ${lastError.message.substring(0, 80)}`);
+          console.warn(`[Scraper:${label}] Proxy attempt ${attempt} failed (${proxy?.address}): ${lastError.message.substring(0, 80)}`);
 
           if (proxy) {
             await proxyService.recordUsage({
@@ -169,18 +186,18 @@ export class GoogleMapsScraper {
 
       await this.delay(3000);
 
-      // Accept cookies if prompted
+      // Accept cookies if prompted (consent cookies already set, this is a fallback)
       await this.acceptCookies(page);
 
       const pageTitle = await page.title();
-      console.log(`[Scraper] Page title: ${pageTitle}`);
+      console.log(`[Scraper:${label}] Page title: ${pageTitle}`);
 
       // Wait for place to load
       try {
         await page.waitForSelector('div[role="main"]', { timeout: 5000 });
-        console.log('[Scraper] Main content loaded');
+        console.log(`[Scraper:${label}] Main content loaded`);
       } catch {
-        console.log('[Scraper] Could not find main content');
+        console.log(`[Scraper:${label}] Could not find main content`);
       }
 
       // Wait for restaurant detail panel to render (SPA lazy load)
@@ -200,14 +217,14 @@ export class GoogleMapsScraper {
           return false;
         });
         if (panelReady) {
-          console.log(`[Scraper] Restaurant detail panel loaded (wait ${wait + 1})`);
+          console.log(`[Scraper:${label}] Restaurant detail panel loaded (wait ${wait + 1})`);
           break;
         }
-        console.log(`[Scraper] Waiting for restaurant panel to render (${wait + 1}/5)...`);
+        console.log(`[Scraper:${label}] Waiting for restaurant panel to render (${wait + 1}/5)...`);
         await this.delay(2000);
       }
       if (!panelReady) {
-        console.log('[Scraper] Restaurant panel may not have fully rendered');
+        console.log(`[Scraper:${label}] Restaurant panel may not have fully rendered`);
       }
 
       // Click reviews tab
@@ -217,24 +234,24 @@ export class GoogleMapsScraper {
       // Wait for reviews to load
       try {
         await page.waitForSelector('div[class*="m6QErb"], div[data-review-id], div[role="main"]', { timeout: 5000 });
-        console.log('[Scraper] Reviews section found');
+        console.log(`[Scraper:${label}] Reviews section found`);
       } catch {
-        console.log('[Scraper] Could not find reviews section - taking screenshot');
+        console.log(`[Scraper:${label}] Could not find reviews section - taking screenshot`);
         await page.screenshot({ path: `/tmp/debug-${placeId}.png`, fullPage: true });
       }
 
       // Search for keyword in reviews
-      const searchSuccess = await this.searchInReviews(page, options.foodKeyword);
+      const searchSuccess = await this.searchInReviews(page, options.foodKeyword, label);
       if (searchSuccess) {
         await this.delay(3000);
       }
 
       // Sort by newest
-      await this.sortByNewest(page);
+      await this.sortByNewest(page, label);
       await this.delay(2000);
 
       // Collect reviews
-      const reviews = await this.collectReviews(page, options);
+      const reviews = await this.collectReviews(page, options, label);
 
       // Get restaurant info
       const restaurantData = await this.extractRestaurantInfo(page, placeId);
@@ -459,7 +476,7 @@ export class GoogleMapsScraper {
   /**
    * Search for keyword in reviews
    */
-  private async searchInReviews(page: Page, keyword: string): Promise<boolean> {
+  private async searchInReviews(page: Page, keyword: string, label: string = ''): Promise<boolean> {
     try {
       console.log(`[Scraper] Looking for search input to search for: ${keyword}`);
 
@@ -528,7 +545,7 @@ export class GoogleMapsScraper {
   /**
    * Sort reviews by newest
    */
-  private async sortByNewest(page: Page): Promise<void> {
+  private async sortByNewest(page: Page, label: string = ''): Promise<void> {
     try {
       console.log('[Scraper] Looking for sort dropdown...');
 
@@ -627,7 +644,8 @@ export class GoogleMapsScraper {
    */
   private async collectReviews(
     page: Page,
-    options: ScrapeOptions
+    options: ScrapeOptions,
+    label: string = ''
   ): Promise<ScrapedReviewData[]> {
     const reviews: ScrapedReviewData[] = [];
     const maxReviews = options.maxReviews || this.maxReviews;
@@ -682,11 +700,11 @@ export class GoogleMapsScraper {
       }
       return info;
     });
-    console.log('[Scraper] Debug info:', debugInfo.join(', '));
+    console.log(`[Scraper:${label}] Debug info:`, debugInfo.join(', '));
 
     while (reviews.length < maxReviews && scrollAttempts < maxScrollAttempts) {
       // Expand all "Diğer" (More) buttons first
-      await this.expandReviews(page);
+      await this.expandReviews(page, label);
 
       // Extract reviews using structural DOM approach
       // Based on XPath: .../div[N]/div/div/div[4]/div[1]/span[1] (star container with 5 child spans)
@@ -856,12 +874,21 @@ export class GoogleMapsScraper {
       // Debug: log extraction results
       if (newReviews.length > 0) {
         const snippet = newReviews[0].text.substring(0, 80);
-        console.log(`[Scraper] Extracted ${newReviews.length} reviews, first: "${snippet}..."`);
+        console.log(`[Scraper:${label}] Extracted ${newReviews.length} reviews, first: "${snippet}..."`);
+        // Log each review's author + text snippet to detect duplicate text issues
+        if (newReviews.length <= 20) {
+          for (let ri = 0; ri < newReviews.length; ri++) {
+            const r = newReviews[ri];
+            console.log(`[Scraper:${label}]   [${ri}] ${r.authorName} (${r.rating}★): "${r.text.substring(0, 60)}..."`);
+          }
+        }
       } else {
-        console.log(`[Scraper] Extracted 0 reviews from evaluate`);
+        console.log(`[Scraper:${label}] Extracted 0 reviews from evaluate`);
       }
 
       // Add unique reviews
+      let addedCount = 0;
+      let dupCount = 0;
       for (const review of newReviews) {
         const isDuplicate = reviews.some(
           (r) => r.text === review.text && r.authorName === review.authorName
@@ -872,14 +899,18 @@ export class GoogleMapsScraper {
             ...review,
             matchedKeywords,
           });
+          addedCount++;
+        } else {
+          dupCount++;
         }
       }
+      console.log(`[Scraper:${label}] Dedup: extracted=${newReviews.length}, new=${addedCount}, dup=${dupCount}, total=${reviews.length}`);
 
       // Check if we got new reviews
       if (reviews.length === lastReviewCount) {
         noNewReviewsCount++;
         if (noNewReviewsCount >= 3) {
-          console.log('[Scraper] No new reviews found, stopping');
+          console.log(`[Scraper:${label}] No new reviews found after 3 scrolls, stopping`);
           break;
         }
       } else {
@@ -911,7 +942,7 @@ export class GoogleMapsScraper {
 
       await this.delay(1500);
       scrollAttempts++;
-      console.log(`[Scraper] Collected ${reviews.length} reviews (scroll ${scrollAttempts})`);
+      console.log(`[Scraper:${label}] Collected ${reviews.length} reviews (scroll ${scrollAttempts})`);
     }
 
     return reviews.slice(0, maxReviews);
@@ -920,7 +951,7 @@ export class GoogleMapsScraper {
   /**
    * Expand "More" buttons on reviews
    */
-  private async expandReviews(page: Page): Promise<void> {
+  private async expandReviews(page: Page, label: string = ''): Promise<void> {
     try {
       const expandedCount = await page.evaluate(() => {
         let count = 0;
@@ -944,7 +975,7 @@ export class GoogleMapsScraper {
         return count;
       });
       if (expandedCount > 0) {
-        console.log(`[Scraper] Expanded ${expandedCount} "Diğer" buttons`);
+        console.log(`[Scraper:${label}] Expanded ${expandedCount} "Diğer" buttons`);
         await this.delay(500);
       }
     } catch {
@@ -1162,8 +1193,9 @@ export class GoogleMapsScraper {
         );
       }
 
+      const lbl = options.restaurantName || fullRestaurantData.name;
       console.log(
-        `[Scraper] Saved ${result.reviews.length} reviews for ${fullRestaurantData.name}`
+        `[Scraper:${lbl}] Saved ${result.reviews.length} reviews for ${fullRestaurantData.name}`
       );
     }
 
