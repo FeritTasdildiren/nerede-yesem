@@ -836,10 +836,15 @@ export class GoogleMapsScraper {
         // Build list of {reviewCard, starContainer} pairs using multiple strategies
 
         // Strategy A: Use data-review-id attribute (most reliable when available)
+        // Deduplicate by review ID — Google Maps nests elements with same data-review-id
         let reviewPairs: Array<{card: HTMLElement; star: Element}> = [];
         const dataReviewCards = container.querySelectorAll('[data-review-id]');
         if (dataReviewCards.length > 0) {
+          const seenIds = new Set<string>();
           for (const card of dataReviewCards) {
+            const reviewId = card.getAttribute('data-review-id') || '';
+            if (seenIds.has(reviewId)) continue;
+            seenIds.add(reviewId);
             const star = findStar(card);
             if (star) {
               reviewPairs.push({ card: card as HTMLElement, star });
