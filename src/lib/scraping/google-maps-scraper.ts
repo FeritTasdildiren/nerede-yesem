@@ -113,7 +113,7 @@ export class GoogleMapsScraper {
     let proxy: Proxy | null = null;
     let browser: Browser | null = null;
     const maxProxyAttempts = 10;
-    const proxyTimeout = 10000; // 10sn per proxy attempt
+    const proxyTimeout = 25000; // 25sn per proxy attempt (Google Maps SPA is heavy)
     const label = options.restaurantName || placeId.substring(0, 15);
 
     try {
@@ -147,8 +147,12 @@ export class GoogleMapsScraper {
 
           console.log(`[Scraper:${label}] Proxy attempt ${attempt}/${maxProxyAttempts}: ${proxy?.address || 'direct'}`);
 
+          // Use 'domcontentloaded' instead of 'networkidle0':
+          // Google Maps SPA continuously loads map tiles, analytics, etc.
+          // networkidle0 (0 connections for 500ms) almost never fires within timeout.
+          // domcontentloaded fires once HTML is parsed — sufficient for SPA shell.
           await page.goto(reviewsUrl, {
-            waitUntil: 'networkidle0',
+            waitUntil: 'domcontentloaded',
             timeout: proxyTimeout,
           });
 
