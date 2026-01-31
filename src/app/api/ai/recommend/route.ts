@@ -148,15 +148,19 @@ export async function POST(request: NextRequest) {
               scrapeUrl = `https://www.google.com/maps/place/?q=place_id:${discovered.placeId}`;
               scrapeId = discovered.placeId;
             } else if (discovered.latitude && discovered.longitude) {
-              // No placeId: build a search URL with name + coordinates
-              // This navigates Google Maps to the specific restaurant
+              // Build search URL with name + coordinates for precise navigation
               const encodedName = encodeURIComponent(discovered.name);
               scrapeUrl = `https://www.google.com/maps/search/${encodedName}/@${discovered.latitude},${discovered.longitude},17z`;
               scrapeId = `scrape-${discovered.name.replace(/\s+/g, '-').substring(0, 30)}`;
+            } else if (discovered.googleMapsUrl) {
+              // Use the Google Maps URL from search card link
+              scrapeUrl = discovered.googleMapsUrl;
+              scrapeId = `scrape-${discovered.name.replace(/\s+/g, '-').substring(0, 30)}`;
             } else {
-              // Cannot scrape without URL or placeId
-              console.log(`[API] No URL or placeId for ${discovered.name}, skipping review scrape`);
-              return { discovered, scrapeResult: null, reviewTexts: [], needsApiCall: !!discovered.placeId };
+              // Last resort: search by name only
+              const encodedName = encodeURIComponent(discovered.name);
+              scrapeUrl = `https://www.google.com/maps/search/${encodedName}/`;
+              scrapeId = `scrape-${discovered.name.replace(/\s+/g, '-').substring(0, 30)}`;
             }
 
             scrapeResult = await googleMapsScraper.scrapeAndSave(
